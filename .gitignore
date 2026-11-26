@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.venv/
+settings.json
+browser-token
+tlyrics.user.js
