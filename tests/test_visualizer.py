@@ -15,6 +15,72 @@ import visualizer
 
 
 class VisualizerTests(unittest.TestCase):
+    def test_clean_bars_are_default_and_have_no_detached_cells(self):
+        self.assertFalse(settings.DEFAULTS['viz_peaks'])
+        for width in (1, 3, 16, 79, 140):
+            for height in (1, 3, 8):
+                for glyph in settings.CHOICES['viz_glyph']:
+                    cfg = dict(settings.DEFAULTS, viz_glyph=glyph)
+                    for phase in range(20):
+                        levels = [max(0, math.sin(i + phase / 3)) for i in range(32)]
+                        cells = visualizer.grid(levels, [1] * 32, [], width, height, cfg)
+                        caps = visualizer.fractional_caps(levels, [1] * 32, width, height, cfg)
+                        self.assertNotIn('▔', caps.values())
+                        self.assertTrue(set(caps) <= set(cells))
+                        for column in range(width):
+                            occupied = sorted(row for row, col in cells if col == column)
+                            if occupied:
+                                self.assertEqual(occupied, list(range(occupied[0], height)))
+
+    def test_peak_markers_disappear_with_silent_bars(self):
+        cfg = dict(settings.DEFAULTS, viz_peaks=True)
+        for level in (0, .001, .015):
+            self.assertEqual(visualizer.grid([level] * 4, [1] * 4, [], 20, 5, cfg), {})
+            self.assertEqual(visualizer.fractional_caps([level] * 4, [1] * 4, 20, 5, cfg), {})
+
+    def test_resize_reduces_history_and_peaks_consistently(self):
+        cfg = dict(settings.DEFAULTS, viz_layout='waterfall')
+        cells = visualizer.grid([0, 1], [], [[0, 1]], 1, 2, cfg)
+        self.assertEqual(cells, {(0, 0): 1})
+        self.assertEqual(visualizer.reduce_bands([.7], 3), [.7] * 3)
+        self.assertEqual(visualizer.reduce_bands([], 3), [0] * 3)
+
+    def test_zero_sized_panel_is_not_drawn(self):
+        screen = MagicMock()
+        engine = visualizer.Visualizer()
+        for size in ((1, 1), (20, 4), (10, 80)):
+            screen.getmaxyx.return_value = size
+            visualizer.draw(screen, engine, settings.DEFAULTS, (12, 5))
+        screen.addstr.assert_not_called()
+        self.assertEqual(visualizer.fractional_caps([.5], [1], 0, 0, settings.DEFAULTS), {})
+
+    def test_old_worker_failure_cannot_replace_new_worker_status(self):
+        engine = visualizer.Visualizer()
+        original_stop = engine.stop
+        def cancelled_setup(config):
+            original_stop.set()
+            engine.stop = threading.Event()
+            engine.message = 'new worker'
+            raise RuntimeError('old worker failed')
+        with patch.object(visualizer, 'Spectrum', side_effect=cancelled_setup):
+            engine._capture(settings.DEFAULTS, original_stop)
+        self.assertEqual(engine.message, 'new worker')
+
+    def test_closed_audio_pipe_reports_failure_and_stops_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / 'parec'
+            script.write_text('#!/usr/bin/env python3\nimport os,time\nos.close(1)\ntime.sleep(10)\n')
+            script.chmod(0o755)
+            engine = visualizer.Visualizer()
+            with patch.dict(os.environ, {'PATH': directory + os.pathsep + os.environ['PATH']}):
+                engine.configure(dict(settings.DEFAULTS, visualizer=True))
+                try:
+                    engine.thread.join(timeout=3)
+                    self.assertFalse(engine.thread.is_alive())
+                    self.assertIn('Audio stream closed', engine.message)
+                finally:
+                    engine.close()
+
     def test_peak_caps_never_recolour_the_body_and_reduce_with_bands(self):
         cfg = dict(settings.DEFAULTS, viz_peaks=True)
         body = visualizer.grid([.5], [.5], [], 1, 4, cfg)

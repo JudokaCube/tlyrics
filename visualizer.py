@@ -169,6 +169,8 @@ class Visualizer:
                         payload = os.read(key.fileobj.fileno(), 65536)
                         if not payload:
                             selector.unregister(key.fileobj)
+                            if key.data == 'audio' and not stop.is_set():
+                                raise RuntimeError('Audio stream closed; toggle the visualizer to retry.')
                             continue
                         if key.data == 'error':
                             errors = (errors + payload)[-2000:]
@@ -181,19 +183,22 @@ class Visualizer:
                         next_analysis += max(1, math.floor((now - next_analysis) / period) + 1) * period
                         analyzed = decoder.generation
                         with self.lock:
-                            self.latest, self.stamp, self.message = frame, now, ''
+                            if not stop.is_set() and stop is self.stop:
+                                self.latest, self.stamp, self.message = frame, now, ''
                     if process.poll() is not None:
                         detail = rendering.safe_text(errors.decode(errors='replace')).strip()
                         raise RuntimeError(detail[:150] or 'Audio capture stopped; toggle the visualizer to retry.')
                     with self.lock:
-                        if not self.stamp and now - started > 5:
+                        if not stop.is_set() and stop is self.stop and not self.stamp and now - started > 5:
                             self.message = 'No audio frames. Check the output device or audio backend.'
         except ImportError:
             with self.lock:
-                self.message = 'Spectrum analysis needs NumPy; run sh install.sh to repair the installation.'
+                if not stop.is_set() and stop is self.stop:
+                    self.message = 'Spectrum analysis needs NumPy; run sh install.sh to repair the installation.'
         except (OSError, ValueError, RuntimeError) as exc:
             with self.lock:
-                self.message = f'Visualizer: {exc}'
+                if not stop.is_set() and stop is self.stop:
+                    self.message = f'Visualizer: {exc}'
         finally:
             if process is not None:
                 if process.poll() is None:
@@ -204,7 +209,10 @@ class Visualizer:
                     try:
                         process.wait(timeout=.5)
                     except subprocess.TimeoutExpired:
-                        process.kill()
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
                         process.wait()
                 process.stdout.close()
                 process.stderr.close()
@@ -264,7 +272,8 @@ def grid(levels, peaks, history, width, height, config):
         if 0 <= x < width and 0 <= y < height and intensity > .015:
             cells[y, x] = max(cells.get((y, x), 0), min(1.0, intensity))
     count = min(len(levels), width)
-    data = [max(levels[i * len(levels) // count:(i + 1) * len(levels) // count]) for i in range(count)]
+    data = reduce_bands(levels, count)
+    peak_data = reduce_bands(peaks, count)
     layout = config['viz_layout']
     if layout == 'levels':
         # Reduce bands once per row instead of repainting a row for every band.
@@ -275,7 +284,7 @@ def grid(levels, peaks, history, width, height, config):
             for col in range(round(value * width)):
                 cell(row, col, value)
         return cells
-    history_rows = tuple(history)[-height:][::-1] if layout == 'waterfall' else ()
+    history_rows = [reduce_bands(frame, count) for frame in tuple(history)[-height:][::-1]] if layout == 'waterfall' else ()
     for i, value in enumerate(data):
         x = i * width // count
         span = max(1, (i + 1) * width // count - x - config['viz_gap'])
@@ -288,7 +297,7 @@ def grid(levels, peaks, history, width, height, config):
         elif layout == 'waterfall':
             for row, frame in enumerate(history_rows):
                 if frame:
-                    intensity = frame[min(len(frame) - 1, i * len(frame) // count)]
+                    intensity = frame[i]
                     for dx in range(span):
                         cell(row, x + dx, intensity)
         else:
@@ -304,22 +313,31 @@ def grid(levels, peaks, history, width, height, config):
                 else:
                     for row in range(height - amount, height):
                         cell(row, x + dx, (height - row) / height)
-                    if config['viz_peaks'] and peaks:
-                        peak = max(peaks[i * len(peaks) // count:(i + 1) * len(peaks) // count])
+                    if config['viz_peaks'] and amount:
+                        peak = peak_data[i]
                         peak_amount = min(height, math.ceil(peak * height))
                         if peak > .015 and peak_amount > amount:
                             cell(height - peak_amount, x + dx, peak_amount / height)
     return cells
 
 
+def reduce_bands(values, count):
+    """Use the same band groups for bars, peaks and waterfall on resize."""
+    if not values:
+        return [0.0] * count
+    return [max(values[i * len(values) // count:max(i * len(values) // count + 1,
+                 (i + 1) * len(values) // count)]) for i in range(count)]
+
+
 def fractional_caps(levels, peaks, columns, height, config):
     """Sub-cell bar edges avoid whole-row jumps on short terminal panels."""
     glyphs = {}
-    if config['viz_layout'] != 'bars' or config['viz_glyph'] != 'blocks' or not levels:
+    if columns < 1 or height < 1 or config['viz_layout'] != 'bars' or config['viz_glyph'] != 'blocks' or not levels:
         return glyphs
     count = min(len(levels), columns)
+    data, peak_data = reduce_bands(levels, count), reduce_bands(peaks, count)
     for i in range(count):
-        value = max(levels[i * len(levels) // count:(i + 1) * len(levels) // count])
+        value = data[i]
         start = i * columns // count
         span = max(1, (i + 1) * columns // count - start - config['viz_gap'])
         units = value * height
@@ -330,8 +348,8 @@ def fractional_caps(levels, peaks, columns, height, config):
             char = '▁▂▃▄▅▆▇█'[min(7, max(0, math.ceil(fraction * 8) - 1))]
             for dx in range(span):
                 glyphs[row, start + dx] = char
-        if config['viz_peaks'] and peaks:
-            peak = max(peaks[i * len(peaks) // count:(i + 1) * len(peaks) // count])
+        if config['viz_peaks'] and value > .015:
+            peak = peak_data[i]
             if peak > .015 and math.ceil(peak * height) > math.ceil(value * height):
                 row = max(0, height - math.ceil(peak * height))
                 for dx in range(span):
@@ -343,7 +361,10 @@ def draw(screen, engine, config, panel):
     if panel is None:
         return
     y, height = panel
-    _, width = screen.getmaxyx()
+    rows_available, width = screen.getmaxyx()
+    height = min(height, rows_available - 1 - y)
+    if width < 5 or height < 1 or y < 0:
+        return
     columns = max(1, min(256, width - 4, config['viz_width'] or width - 4))
     left = max(1, (width - columns) // 2)
     levels = engine.frame(config)

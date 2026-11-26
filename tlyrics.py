@@ -383,7 +383,7 @@ SETTINGS_GROUPS.update({
                          ('viz_smoothing', 'Response smoothing'), ('viz_decay', 'Peak decay')],
     'Visualizer style': [('viz_colour', 'Colour mode'), ('viz_palette', 'Palette'),
                          ('viz_gradient', 'Gradient direction'), ('viz_glyph', 'Bar character'),
-                         ('viz_gap', 'Bar spacing'), ('viz_peaks', 'Peak caps (bars)')],
+                         ('viz_gap', 'Bar spacing'), ('viz_peaks', 'Floating peak markers')],
 })
 
 
@@ -419,6 +419,8 @@ def menu(screen, config, tracks):
                 put(screen, 3 + row, display, curses.A_REVERSE if row + start == index else 0)
             if category == 'Command aliases':
                 hint = 'Alias changes apply immediately. ' + (', '.join(draft['aliases']) or 'No aliases.')
+            elif category == 'Visualizer style' and rows[index][0] == 'viz_peaks':
+                hint = 'Optional floating marks above bars show recent peaks. Off gives clean bars.'
             elif category == 'Playback & lyrics' and rows[index][0] == 'word_sync':
                 hint = 'Highlights supplied word timestamps; line-only lyrics cannot track words.'
             elif draft != config:

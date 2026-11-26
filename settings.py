@@ -37,7 +37,7 @@ DEFAULTS.update(background='terminal', border='none', title_style='bold',
                 active_marker='chevron', visualizer=False, viz_layout='bars', viz_position='bottom',
                 viz_height=5, viz_width=0, viz_bars=32, viz_channels='stereo', viz_fps=30,
                 viz_backend='pulse', viz_source='auto', viz_sensitivity=100, viz_autosens=True,
-                viz_noise=65, viz_smoothing='balanced', viz_decay='balanced', viz_peaks=True,
+                viz_noise=65, viz_smoothing='balanced', viz_decay='balanced', viz_peaks=False,
                 viz_colour='palette', viz_palette='ocean', viz_gradient='vertical',
                 viz_glyph='blocks', viz_gap=1)
 CHOICES.update(background=['terminal', 'black', 'midnight', 'charcoal'],

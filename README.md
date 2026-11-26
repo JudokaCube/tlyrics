@@ -58,6 +58,8 @@ then select the backend in **Visualizer / Audio & response**.
 Six layouts: bars, mirror, outline, waterfall, radial and horizontal levels.
 Adjust placement, size, bands, mono/stereo, sensitivity, noise reduction, smoothing,
 peak decay, colours, glyphs and frame rate. The visualizer is off by default.
+Floating peak markers are off by default. Enable them under **Visualizer /
+Style & colours** if you want marks showing recent peaks above the bars.
 It includes other apps using the same output, does not capture your microphone,
 and never saves or uploads audio. Capture pauses below 18 terminal rows.
 
