@@ -359,6 +359,7 @@ def ui(screen, players, args, config):
     offset = config["offset"]
     scroll = 0
     error = ''
+    bridge_error = ''
     available = []
     local = {'syncedLyrics': Path(args.lrc).read_text()} if args.lrc else None
     if args.settings:
@@ -371,9 +372,10 @@ def ui(screen, players, args, config):
             if config['bridge'] and players.bridge is None:
                 try:
                     players.bridge = browser_bridge.Bridge()
+                    bridge_error = ''
                 except OSError as exc:
                     config['bridge'] = False
-                    error = f'Browser bridge: {exc}'
+                    bridge_error = f'Browser bridge unavailable: {exc}'
             elif not config['bridge'] and players.bridge:
                 players.bridge.close()
                 players.bridge = None
@@ -413,6 +415,8 @@ def ui(screen, players, args, config):
             screen.erase()
             h, w = screen.getmaxyx()
             put(screen, 0, 'tlyrics', accent)
+            if bridge_error:
+                put(screen, 1, bridge_error)
             if current and current.title:
                 put(screen, 2, current.title, curses.A_BOLD, True)
                 put(screen, 3, current.artist, curses.A_DIM, True)
