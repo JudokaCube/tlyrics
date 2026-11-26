@@ -111,3 +111,11 @@ class MenuTests(unittest.TestCase):
         config, _, save, _, _, _ = self.run_menu([curses.KEY_DOWN, 10, 10, 27, 27], lambda *args: 'green')
         self.assertEqual(config['theme'], 'green')
         save.assert_called_once()
+
+    def test_resize_keeps_pending_setting_and_selection(self):
+        config, screen, save, _, _, _ = self.run_menu(
+            [curses.KEY_DOWN, 10, 10, curses.KEY_RESIZE, 27, curses.KEY_RESIZE, 19],
+            lambda *args: 'green', size=(8, 25))
+        self.assertEqual(config['theme'], 'green')
+        self.assertEqual(screen.clearok.call_count, 2)
+        save.assert_called_once()

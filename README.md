@@ -49,6 +49,8 @@ middle, including at the start and end of a song. Turn it off for compact scroll
 Choose presets, colours, backgrounds, borders, layouts, word effects and progress
 styles in settings. Advanced options have their own submenus. Gradients need a
 256-colour terminal; glow is simulated with colour and brightness.
+Resizing reflows lyrics and fits complete visualizer bars. Playback needs at least
+24 columns by 14 rows; smaller windows show a resize prompt and keep your place.
 
 **No CAVA required.** tlyrics performs its own FFT spectrum analysis using NumPy.
 Audio comes from your system output through `parec` (PulseAudio) or `pw-record`

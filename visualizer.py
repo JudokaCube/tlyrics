@@ -263,6 +263,17 @@ def region(height, config, top=8):
     return top, y - 1, (y, size)
 
 
+def bar_geometry(width, bands, gap):
+    """Fit complete, equal-width bars and center unused terminal cells."""
+    if width < 1 or bands < 1:
+        return []
+    count = min(bands, max(1, (width + gap) // (gap + 1)))
+    span = max(1, (width - (count - 1) * gap) // count)
+    used = count * span + (count - 1) * gap
+    left = (width - used) // 2
+    return [(left + i * (span + gap), span) for i in range(count)]
+
+
 def grid(levels, peaks, history, width, height, config):
     """Return sparse cells (row, column) -> intensity, bounded by the panel."""
     cells = {}
@@ -271,10 +282,11 @@ def grid(levels, peaks, history, width, height, config):
     def cell(y, x, intensity):
         if 0 <= x < width and 0 <= y < height and intensity > .015:
             cells[y, x] = max(cells.get((y, x), 0), min(1.0, intensity))
-    count = min(len(levels), width)
+    layout = config['viz_layout']
+    geometry = bar_geometry(width, len(levels), config['viz_gap'])
+    count = min(len(levels), width) if layout in ('levels', 'radial') else len(geometry)
     data = reduce_bands(levels, count)
     peak_data = reduce_bands(peaks, count)
-    layout = config['viz_layout']
     if layout == 'levels':
         # Reduce bands once per row instead of repainting a row for every band.
         for row in range(min(height, count)):
@@ -286,8 +298,7 @@ def grid(levels, peaks, history, width, height, config):
         return cells
     history_rows = [reduce_bands(frame, count) for frame in tuple(history)[-height:][::-1]] if layout == 'waterfall' else ()
     for i, value in enumerate(data):
-        x = i * width // count
-        span = max(1, (i + 1) * width // count - x - config['viz_gap'])
+        x, span = geometry[i] if layout != 'radial' else (0, 1)
         amount = max(0, min(height, math.ceil(value * height))) if value > .015 else 0
         if layout == 'radial':
             angle = i / count * math.tau
@@ -334,12 +345,12 @@ def fractional_caps(levels, peaks, columns, height, config):
     glyphs = {}
     if columns < 1 or height < 1 or config['viz_layout'] != 'bars' or config['viz_glyph'] != 'blocks' or not levels:
         return glyphs
-    count = min(len(levels), columns)
+    geometry = bar_geometry(columns, len(levels), config['viz_gap'])
+    count = len(geometry)
     data, peak_data = reduce_bands(levels, count), reduce_bands(peaks, count)
     for i in range(count):
         value = data[i]
-        start = i * columns // count
-        span = max(1, (i + 1) * columns // count - start - config['viz_gap'])
+        start, span = geometry[i]
         units = value * height
         whole = math.floor(units)
         fraction = units - whole

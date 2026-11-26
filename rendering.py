@@ -28,6 +28,25 @@ def safe_text(text):
     return ''.join(char for char in text if char.isprintable())
 
 
+def clip_text(text, columns, tail=False):
+    """Clip by terminal cells, retaining combining marks with their base."""
+    clusters = []
+    for char in safe_text(str(text)):
+        if width(char) == 0:
+            if clusters:
+                clusters[-1] += char
+        else:
+            clusters.append(char)
+    result, used = [], 0
+    for cluster in reversed(clusters) if tail else clusters:
+        size = width(cluster[0])
+        if used + size > max(0, columns):
+            break
+        result.append(cluster)
+        used += size
+    return ''.join(reversed(result) if tail else result)
+
+
 def configure(config):
     if not curses.has_colors():
         return curses.A_BOLD

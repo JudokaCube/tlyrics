@@ -287,10 +287,11 @@ def clean(text):
 def put(screen, y, text, attr=0, centered=False):
     h, w = screen.getmaxyx()
     if 0 <= y < h and w > 2:
-        text = clean(text)[:w - 3]
-        x = max(1, (w - len(text)) // 2) if centered else 1
+        text = rendering.clip_text(text, w - 2)
+        cells = sum(rendering.width(c) for c in text)
+        x = max(1, (w - cells) // 2) if centered else 1
         try:
-            screen.addnstr(y, x, text, w - x - 1, attr)
+            screen.addnstr(y, x, text, len(text), attr)
         except curses.error:
             pass
 
@@ -304,15 +305,40 @@ def apply_theme(config):
     return rendering.configure(config)
 
 
+def small_terminal(screen, rows=14, columns=24):
+    h, w = screen.getmaxyx()
+    if h >= rows and w >= columns:
+        return False
+    put(screen, max(0, h // 2 - 1), 'Resize terminal', curses.A_BOLD, True)
+    put(screen, h // 2 + 1, f'Need {columns} columns x {rows} rows', curses.A_DIM, True)
+    return True
+
+
+def setting_label(label, value, columns):
+    if columns < 2:
+        return rendering.clip_text(value, columns)
+    value = rendering.clip_text(value, max(1, columns // 2))
+    room = max(0, columns - sum(rendering.width(c) for c in value) - 1)
+    label = rendering.clip_text(label, room)
+    return label + ' ' * (room - sum(rendering.width(c) for c in label) + 1) + value
+
+
 def prompt(screen, label):
     value = ''
     while True:
         screen.erase()
-        put(screen, 2, label, curses.A_BOLD)
-        put(screen, 4, value + '▏')
-        put(screen, 6, 'Enter confirms · Esc cancels', curses.A_DIM)
+        if not small_terminal(screen, 8, 16):
+            put(screen, 1, label, curses.A_BOLD)
+            put(screen, 3, rendering.clip_text(value, screen.getmaxyx()[1] - 3, tail=True) + '▏')
+            put(screen, screen.getmaxyx()[0] - 2, 'Enter confirms · Esc cancels', curses.A_DIM)
         screen.refresh()
-        key = screen.get_wch()
+        try:
+            key = screen.get_wch()
+        except curses.error:
+            continue
+        if key == curses.KEY_RESIZE:
+            screen.clearok(True)
+            continue
         if key in ('\x1b', '\x03'):
             return None
         if key in ('\n', '\r'):
@@ -327,14 +353,18 @@ def choose(screen, title, values, current):
     index = values.index(current) if current in values else 0
     while True:
         screen.erase()
-        put(screen, 1, title, curses.A_BOLD)
-        room = max(1, screen.getmaxyx()[0] - 6)
-        start = max(0, index - room + 1)
-        for row, value in enumerate(values[start:start + room]):
-            put(screen, row + 3, str(value), curses.A_REVERSE if row + start == index else 0)
-        put(screen, screen.getmaxyx()[0] - 2, '↑ / ↓ choose · Enter select · Esc back', curses.A_DIM)
+        if not small_terminal(screen, 8, 16):
+            put(screen, 1, title, curses.A_BOLD)
+            room = max(1, screen.getmaxyx()[0] - 6)
+            start = max(0, index - room + 1)
+            for row, value in enumerate(values[start:start + room]):
+                put(screen, row + 3, str(value), curses.A_REVERSE if row + start == index else 0)
+            put(screen, screen.getmaxyx()[0] - 2, '↑ / ↓ choose · Enter select · Esc back', curses.A_DIM)
         screen.refresh()
         key = screen.getch()
+        if key == curses.KEY_RESIZE:
+            screen.clearok(True)
+            continue
         if key in (27, 3):
             return current
         if key in (10, 13):
@@ -407,30 +437,34 @@ def menu(screen, config, tracks):
                 theme_key = new_theme
             rendering.chrome(screen, draft)
             h, w = screen.getmaxyx()
-            heading = f'Settings / {category}' if category else f'Terminal Lyrics {updates.VERSION} / Settings'
-            put(screen, 1, heading, accent)
-            room = max(1, h - 7)
-            start = max(0, index - room + 1)
-            for row, (key, label) in enumerate(rows[start:start + room]):
-                value = draft.get(key, '')
-                if isinstance(value, bool):
-                    value = 'on' if value else 'off'
-                display = f'{label:<29} {value}' if key in draft else label
-                put(screen, 3 + row, display, curses.A_REVERSE if row + start == index else 0)
-            if category == 'Command aliases':
-                hint = 'Alias changes apply immediately. ' + (', '.join(draft['aliases']) or 'No aliases.')
-            elif category == 'Visualizer style' and rows[index][0] == 'viz_peaks':
-                hint = 'Optional floating marks above bars show recent peaks. Off gives clean bars.'
-            elif category == 'Playback & lyrics' and rows[index][0] == 'word_sync':
-                hint = 'Highlights supplied word timestamps; line-only lyrics cannot track words.'
-            elif draft != config:
-                hint = 'Unsaved changes - Ctrl+S saves all categories.'
-            else:
-                hint = 'Select an option to edit.' if category else 'Choose a category to change its options.'
-            put(screen, h - 3, message or hint, curses.A_DIM)
-            put(screen, h - 2, '↑ / ↓ move · Enter select · Ctrl+S save · Esc ' + ('back' if category else 'save & exit'), curses.A_DIM)
+            if not small_terminal(screen, 8, 16):
+                heading = f'Settings / {category}' if category else f'Terminal Lyrics {updates.VERSION} / Settings'
+                put(screen, 1, heading, accent)
+                room = max(1, h - 7)
+                start = max(0, index - room + 1)
+                for row, (key, label) in enumerate(rows[start:start + room]):
+                    value = draft.get(key, '')
+                    if isinstance(value, bool):
+                        value = 'on' if value else 'off'
+                    display = setting_label(label, str(value), w - 2) if key in draft else label
+                    put(screen, 3 + row, display, curses.A_REVERSE if row + start == index else 0)
+                if category == 'Command aliases':
+                    hint = 'Alias changes apply immediately. ' + (', '.join(draft['aliases']) or 'No aliases.')
+                elif category == 'Visualizer style' and rows[index][0] == 'viz_peaks':
+                    hint = 'Optional floating marks above bars show recent peaks. Off gives clean bars.'
+                elif category == 'Playback & lyrics' and rows[index][0] == 'word_sync':
+                    hint = 'Highlights supplied word timestamps; line-only lyrics cannot track words.'
+                elif draft != config:
+                    hint = 'Unsaved changes - Ctrl+S saves all categories.'
+                else:
+                    hint = 'Select an option to edit.' if category else 'Choose a category to change its options.'
+                put(screen, h - 3, message or hint, curses.A_DIM)
+                put(screen, h - 2, '↑ / ↓ move · Enter select · Ctrl+S save · Esc ' + ('back' if category else 'save & exit'), curses.A_DIM)
             screen.refresh()
             pressed = screen.getch()
+            if pressed == curses.KEY_RESIZE:
+                screen.clearok(True)
+                continue
             if pressed == 3:
                 return
             if pressed == 27:
@@ -577,7 +611,7 @@ def ui(screen, players, args, config):
             updater.check(config, manual=True)
         while True:
             frame_started = time.monotonic()
-            visuals.configure(config if screen.getmaxyx()[0] >= 18 else dict(config, visualizer=False))
+            visuals.configure(config if screen.getmaxyx()[0] >= 18 and screen.getmaxyx()[1] >= 24 else dict(config, visualizer=False))
             restart = updater.poll()
             if restart:
                 return restart
@@ -651,58 +685,62 @@ def ui(screen, players, args, config):
                 future = None
             rendering.chrome(screen, config)
             h, w = screen.getmaxyx()
-            lyric_top, lyric_bottom, panel = visualizer.region(h, config)
-            if config['show_header']:
-                put(screen, 0, f'tlyrics {updates.VERSION}', accent)
-            if updater.message:
-                put(screen, 1, updater.message, curses.A_DIM)
-            if bridge_error:
-                put(screen, 1, bridge_error)
-            if current and current.title:
-                put(screen, 2, current.title, {'bold': curses.A_BOLD, 'accent': accent, 'plain': 0}[config['title_style']], True)
-                put(screen, 3, current.artist, curses.A_DIM, True)
-                position = playback.seconds()
-                song_offset = config['song_offsets'].get(settings.song_key(current), 0.0)
-                offset = config['offset'] + song_offset
-                stamp = clock(position) if position is not None else '--:--'
-                if config['show_status']:
-                    put(screen, 5, f'{current.player} · {current.status} · {stamp} / {clock(current.duration)} · offset {offset:+.2f}s', centered=True)
-                if config["progress"] and position is not None and current.duration:
-                    length = max(1, w - 6)
-                    put(screen, 6, rendering.progress_bar(position / current.duration, length, config['progress_style']), accent)
-                room = max(1, (lyric_bottom - lyric_top) // config['spacing'])
-                if doc.lines and position is not None:
-                    lyric_time = position + offset
-                    mode = doc.sync_mode(lyric_time, config['word_sync'])
-                    if current.resolution >= 0.5:
-                        mode += ' | coarse player timing'
-                    elif playback.cadence >= 0.5:
-                        mode += ' | interpolating player clock'
-                    if config['show_status'] or doc.warning or (config['word_sync'] and mode.startswith('Line sync')):
-                        put(screen, 7, mode + (' | ' + doc.warning if doc.warning else ''), curses.A_DIM, True)
-                    rendering.draw(screen, doc, lyric_time, config, top=lyric_top, bottom=lyric_bottom)
-                elif future:
-                    put(screen, (lyric_top + lyric_bottom) // 2, 'Finding lyrics…', centered=True)
+            if not small_terminal(screen):
+                lyric_top, lyric_bottom, panel = visualizer.region(h, config)
+                if config['show_header']:
+                    put(screen, 0, f'tlyrics {updates.VERSION}', accent)
+                if updater.message:
+                    put(screen, 1, updater.message, curses.A_DIM)
+                if bridge_error:
+                    put(screen, 1, bridge_error)
+                if current and current.title:
+                    put(screen, 2, current.title, {'bold': curses.A_BOLD, 'accent': accent, 'plain': 0}[config['title_style']], True)
+                    put(screen, 3, current.artist, curses.A_DIM, True)
+                    position = playback.seconds()
+                    song_offset = config['song_offsets'].get(settings.song_key(current), 0.0)
+                    offset = config['offset'] + song_offset
+                    stamp = clock(position) if position is not None else '--:--'
+                    if config['show_status']:
+                        put(screen, 5, f'{current.player} · {current.status} · {stamp} / {clock(current.duration)} · offset {offset:+.2f}s', centered=True)
+                    if config["progress"] and position is not None and current.duration:
+                        length = max(1, w - 6)
+                        put(screen, 6, rendering.progress_bar(position / current.duration, length, config['progress_style']), accent)
+                    room = max(1, (lyric_bottom - lyric_top) // config['spacing'])
+                    if doc.lines and position is not None:
+                        lyric_time = position + offset
+                        mode = doc.sync_mode(lyric_time, config['word_sync'])
+                        if current.resolution >= 0.5:
+                            mode += ' | coarse player timing'
+                        elif playback.cadence >= 0.5:
+                            mode += ' | interpolating player clock'
+                        if config['show_status'] or doc.warning or (config['word_sync'] and mode.startswith('Line sync')):
+                            put(screen, 7, mode + (' | ' + doc.warning if doc.warning else ''), curses.A_DIM, True)
+                        rendering.draw(screen, doc, lyric_time, config, top=lyric_top, bottom=lyric_bottom)
+                    elif future:
+                        put(screen, (lyric_top + lyric_bottom) // 2, 'Finding lyrics…', centered=True)
+                    else:
+                        plain = doc.plain or data.get('plainLyrics') or ''
+                        message = data.get('message') or doc.warning or ('Instrumental ♪' if data.get('instrumental') else
+                                  'Player does not report position; sync unavailable.' if doc.lines else
+                                  'Only unsynced lyrics available. Use ↑ / ↓ to scroll.' if plain else 'No lyrics available.')
+                        put(screen, 7, message, curses.A_DIM, True)
+                        display = [line.text for line in doc.lines] if doc.lines else plain.splitlines()
+                        scroll = min(scroll, max(0, len(display) - room))
+                        for row, words in enumerate(display[scroll:scroll + room]):
+                            put(screen, lyric_top + row * config['spacing'], words, centered=config['align'] == 'center')
                 else:
-                    plain = doc.plain or data.get('plainLyrics') or ''
-                    message = data.get('message') or doc.warning or ('Instrumental ♪' if data.get('instrumental') else
-                              'Player does not report position; sync unavailable.' if doc.lines else
-                              'Only unsynced lyrics available. Use ↑ / ↓ to scroll.' if plain else 'No lyrics available.')
-                    put(screen, 7, message, curses.A_DIM, True)
-                    display = [line.text for line in doc.lines] if doc.lines else plain.splitlines()
-                    scroll = min(scroll, max(0, len(display) - room))
-                    for row, words in enumerate(display[scroll:scroll + room]):
-                        put(screen, lyric_top + row * config['spacing'], words, centered=config['align'] == 'center')
-            else:
-                put(screen, (lyric_top + lyric_bottom) // 2, error or 'Waiting for a supported music player...', centered=True)
-            visualizer.draw(screen, visuals, config, panel)
-            if config['show_hints']:
-                put(screen, h - 2, 'q quit  s settings  v visualizer  u updates  [ / ] timing  0 reset  r retry', curses.A_DIM, True)
+                    put(screen, (lyric_top + lyric_bottom) // 2, error or 'Waiting for a supported music player...', centered=True)
+                visualizer.draw(screen, visuals, config, panel)
+                if config['show_hints']:
+                    put(screen, h - 2, 'q quit  s settings  v visualizer  u updates  [ / ] timing  0 reset  r retry', curses.A_DIM, True)
             screen.refresh()
             # Drawing time is part of the frame budget, not an extra delay.
             remaining = 1 / config['fps'] - (time.monotonic() - frame_started)
             screen.timeout(max(0, math.ceil(remaining * 1000)))
             pressed = screen.getch()
+            if pressed == curses.KEY_RESIZE:
+                screen.clearok(True)
+                continue
             if pressed in (ord('q'), 27, 3):
                 break
             if pressed == ord('s'):
