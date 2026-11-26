@@ -18,7 +18,9 @@ tlyrics
 
 ## Use
 
-- `s`: settings - player, theme, layout, effects, timing, cache and command aliases.
+- `s`: settings - Playback & lyrics, Appearance, Effects, Browser setup, Updates,
+  and Command aliases. Enter opens a category; Esc goes back. Ctrl+S saves all
+  changes. Esc from the category list discards changes; aliases apply immediately.
 - `[` / `]`: adjust this song by 0.05s (saved). `0`: reset this song. `r`: retry. `q`: quit.
 - `tlyrics --settings`: open settings directly.
 - `tlyrics --list`: list players. `tlyrics --player spotify`: select one.
@@ -67,7 +69,7 @@ Tests (with PyYAML installed): `python3 -m unittest discover -s tests -v`.
 
 ## Updates
 
-Version: 1.0.1. `tlyrics --version` shows your installed version.
+Version: 1.0.2. `tlyrics --version` shows your installed version.
 By default, the app checks GitHub daily and asks before installing a new release.
 Choose **auto**, **ask** or **off** in settings, with a 6-hour, daily or weekly
 check interval. Press `u` or choose **Check for updates now** for a manual check.

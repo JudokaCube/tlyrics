@@ -136,3 +136,19 @@ class UpdateTests(unittest.TestCase):
             manager.check(dict(settings.DEFAULTS, update_mode='off'), manual=True)
             submit.assert_called_once_with(updates.latest)
         manager.future = None
+
+    def test_empty_update_state_is_valid_and_not_read_each_frame(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / 'state.json'
+            state.write_text('{}')
+            with patch.object(updates, 'STATE', state):
+                self.assertEqual(updates.load_state(), {'checked_at': 0})
+                self.assertTrue(updates.due(settings.DEFAULTS))
+        manager = updates.Manager()
+        self.addCleanup(manager.close)
+        with patch.object(updates, 'due', return_value=False) as due, patch.object(updates.time, 'monotonic', return_value=100):
+            for _ in range(120):
+                manager.check(settings.DEFAULTS)
+            due.assert_called_once()
+            manager.check(dict(settings.DEFAULTS, update_mode='off'))
+            self.assertEqual(due.call_count, 2)

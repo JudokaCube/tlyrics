@@ -101,7 +101,7 @@ def load_state():
         if isinstance(state, dict):
             checked = state.get('checked_at', 0)
             if type(checked) in (int, float) and math.isfinite(checked) and 0 <= checked <= time.time():
-                return state
+                return {'checked_at': checked}
     except (OSError, ValueError):
         pass
     return {'checked_at': 0}
@@ -174,12 +174,20 @@ class Manager:
         self.message = ''
         self.pending = None
         self.attempted_at = -math.inf
+        self.next_probe = -math.inf
+        self.policy = None
 
     def check(self, config, manual=False):
         if self.future or self.pending:
             return
-        if not manual and (time.monotonic() - self.attempted_at < 60 or not due(config)):
-            return
+        policy = (config['update_mode'], config['update_hours'])
+        now = time.monotonic()
+        if not manual:
+            if policy == self.policy and now < self.next_probe:
+                return
+            self.policy, self.next_probe = policy, now + 60
+            if now - self.attempted_at < 60 or not due(config):
+                return
         self.manual, self.action = manual, 'check'
         self.attempted_at = time.monotonic()
         self.message = 'Checking for updates...'

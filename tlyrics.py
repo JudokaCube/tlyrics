@@ -344,41 +344,72 @@ def choose(screen, title, values, current):
             index = (index + 1) % len(values)
 
 
+SETTINGS_GROUPS = {
+    'Playback & lyrics': [('player', 'Music player'), ('word_sync', 'Word sync'),
+                          ('offset', 'Global timing offset'), ('offset_step', 'Song adjustment step'),
+                          ('interval', 'Playback refresh (seconds)'), ('cache', 'Cache lyrics')],
+    'Appearance': [('theme', 'Theme'), ('layout', 'Layout'), ('align', 'Alignment'),
+                   ('spacing', 'Line spacing'), ('max_width', 'Lyrics width (0 = full)'),
+                   ('progress', 'Progress bar'), ('timestamps', 'Lyric timestamps')],
+    'Effects': [('word_style', 'Word highlight'), ('glow', 'Glow'), ('gradient', 'Gradient target'),
+                ('palette', 'Gradient colours'), ('pulse', 'Gentle pulse'),
+                ('animate_gradient', 'Animate gradient'), ('dim_inactive', 'Dim inactive lyrics'),
+                ('underline_word', 'Underline active word'), ('fps', 'Animation frame rate')],
+    'Browser setup': [('bridge', 'Browser bridge'), ('browser', 'Export browser setup script')],
+    'Updates': [('update_mode', 'Update mode'), ('update_hours', 'Check interval (hours)'),
+                ('check_updates', 'Save and check for updates')],
+    'Command aliases': [('add', 'Add terminal alias'), ('remove', 'Remove terminal alias')],
+}
+
+
 def menu(screen, config, tracks):
     draft = dict(config, aliases=list(config['aliases']), song_offsets=dict(config['song_offsets']))
-    rows = [('player', 'Player'), ('theme', 'Theme'), ('layout', 'Layout'), ('align', 'Alignment'),
-            ('progress', 'Progress bar'), ('timestamps', 'Lyric timestamps'), ('spacing', 'Line spacing'),
-            ('offset', 'Global timing offset'), ('offset_step', 'Song adjustment step'),
-            ('interval', 'Playback refresh (seconds)'), ('fps', 'Animation frame rate'),
-            ('word_sync', 'Word sync'), ('word_style', 'Word highlight'), ('glow', 'Glow'),
-            ('gradient', 'Gradient target'), ('palette', 'Gradient colours'), ('pulse', 'Gentle pulse'),
-            ('animate_gradient', 'Animate gradient'), ('dim_inactive', 'Dim inactive lyrics'),
-            ('underline_word', 'Underline active word'), ('max_width', 'Lyrics width (0 = full)'),
-            ('cache', 'Cache lyrics'), ('bridge', 'Browser bridge'), ('browser', 'Export browser setup script'),
-            ('update_mode', 'Updates: ask / auto / off'), ('update_hours', 'Check interval (hours)'),
-            ('check_updates', 'Check for updates now'), ('add', 'Add terminal alias'), ('remove', 'Remove terminal alias'), ('save', 'Save and return')]
+    category = None
+    root_index = 0
+    selections = {}
+    theme_key = None
     index = 0
-    message = 'Changes save with Save / Ctrl+S. Alias changes apply immediately.'
+    message = ''
     screen.timeout(-1)
     try:
         while True:
-            accent = apply_theme(draft)
+            rows = (SETTINGS_GROUPS[category] + [('back', 'Back to categories')] if category else
+                    [(name, name + ' >') for name in SETTINGS_GROUPS] +
+                    [('save', 'Save and return'), ('cancel', 'Discard and return')])
+            new_theme = (draft['theme'], draft['palette'], draft['glow'])
+            if new_theme != theme_key:
+                accent = apply_theme(draft)
+                theme_key = new_theme
             screen.erase()
             h, w = screen.getmaxyx()
-            put(screen, 1, f'Terminal Lyrics {updates.VERSION} · Settings', accent)
+            heading = f'Settings / {category}' if category else f'Terminal Lyrics {updates.VERSION} / Settings'
+            put(screen, 1, heading, accent)
             room = max(1, h - 7)
             start = max(0, index - room + 1)
             for row, (key, label) in enumerate(rows[start:start + room]):
                 value = draft.get(key, '')
                 if isinstance(value, bool):
                     value = 'on' if value else 'off'
-                put(screen, 3 + row, f'{label:<29} {value}', curses.A_REVERSE if row + start == index else 0)
-            put(screen, h - 3, message, curses.A_DIM)
-            put(screen, h - 2, '↑ / ↓ move · Enter edit · Ctrl+S save · Esc cancel', curses.A_DIM)
+                display = f'{label:<29} {value}' if key in draft else label
+                put(screen, 3 + row, display, curses.A_REVERSE if row + start == index else 0)
+            if category == 'Command aliases':
+                hint = 'Alias changes apply immediately. ' + (', '.join(draft['aliases']) or 'No aliases.')
+            elif draft != config:
+                hint = 'Unsaved changes - Ctrl+S saves all categories.'
+            else:
+                hint = 'Select an option to edit.' if category else 'Choose a category to change its options.'
+            put(screen, h - 3, message or hint, curses.A_DIM)
+            put(screen, h - 2, '↑ / ↓ move · Enter select · Ctrl+S save · Esc ' + ('back' if category else 'cancel'), curses.A_DIM)
             screen.refresh()
             pressed = screen.getch()
-            if pressed in (27, 3):
+            if pressed == 3:
                 return
+            if pressed == 27:
+                if category is None:
+                    return
+                selections[category] = index
+                category, index, message = None, root_index, ''
+                continue
             if pressed == curses.KEY_UP:
                 index = (index - 1) % len(rows)
             elif pressed == curses.KEY_DOWN:
@@ -386,7 +417,19 @@ def menu(screen, config, tracks):
             elif pressed in (10, 13, 19):
                 key = 'save' if pressed == 19 else rows[index][0]
                 try:
+                    if key in SETTINGS_GROUPS:
+                        root_index = index
+                        category, index, message = key, selections.get(key, 0), ''
+                        continue
+                    if key == 'back':
+                        selections[category] = index
+                        category, index, message = None, root_index, ''
+                        continue
+                    if key == 'cancel':
+                        return
                     if key == 'check_updates':
+                        settings.save(draft)
+                        config.update(draft)
                         return 'check_updates'
                     if key == 'save':
                         settings.save(draft)
@@ -442,9 +485,6 @@ def ui(screen, players, args, config):
         pass
     screen.timeout(max(1, round(1000 / config["fps"])))
     accent = apply_theme(config)
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    lyrics_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    updater = updates.Manager()
     current = None
     key = None
     data = {}
@@ -463,11 +503,15 @@ def ui(screen, players, args, config):
         if path.stat().st_size > lyrics.MAX_BYTES:
             raise ValueError('Lyrics file is too large')
         local = {('lyricsfile' if path.suffix in ('.yaml', '.yml') else 'syncedLyrics'): path.read_text(encoding='utf-8-sig')}
+    check_updates = args.settings and menu(screen, config, []) == 'check_updates'
     if args.settings:
-        if menu(screen, config, []) == 'check_updates':
-            updater.check(config, manual=True)
         accent = apply_theme(config)
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    lyrics_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    updater = updates.Manager()
     try:
+        if check_updates:
+            updater.check(config, manual=True)
         while True:
             frame_started = time.monotonic()
             restart = updater.poll()
