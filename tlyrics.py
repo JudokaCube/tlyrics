@@ -319,7 +319,7 @@ def prompt(screen, label):
             return value.strip()
         if key in (curses.KEY_BACKSPACE, '\x7f', '\b'):
             value = value[:-1]
-        elif isinstance(key, str) and key.isprintable() and len(value) < 100:
+        elif isinstance(key, str) and key.isprintable() and len(value) < 4096:
             value += key
 
 
@@ -363,9 +363,10 @@ SETTINGS_GROUPS = {
 }
 
 
-ROOT_CATEGORIES = tuple(SETTINGS_GROUPS) + ('Visualizer',)
+ROOT_CATEGORIES = tuple(SETTINGS_GROUPS) + ('Visualizer', 'Settings backup')
 SETTINGS_GROUPS['Appearance'] += [('preset', 'Apply appearance preset'), ('Layout details', 'Layout details >')]
 SETTINGS_GROUPS.update({
+    'Settings backup': [('export_settings', 'Export settings'), ('import_settings', 'Import settings')],
     'Layout details': [('background', 'Background'), ('border', 'Border'), ('title_style', 'Song title style'),
                        ('show_header', 'App heading'), ('show_status', 'Playback details'),
                        ('show_hints', 'Keyboard hints'), ('progress_style', 'Progress style'),
@@ -386,7 +387,7 @@ SETTINGS_GROUPS.update({
 
 
 def menu(screen, config, tracks):
-    draft = dict(config, aliases=list(config['aliases']), song_offsets=dict(config['song_offsets']))
+    draft = settings.clone(config)
     category = None
     parents = []
     selections = {}
@@ -422,14 +423,21 @@ def menu(screen, config, tracks):
             else:
                 hint = 'Select an option to edit.' if category else 'Choose a category to change its options.'
             put(screen, h - 3, message or hint, curses.A_DIM)
-            put(screen, h - 2, '↑ / ↓ move · Enter select · Ctrl+S save · Esc ' + ('back' if category else 'cancel'), curses.A_DIM)
+            put(screen, h - 2, '↑ / ↓ move · Enter select · Ctrl+S save · Esc ' + ('back' if category else 'save & exit'), curses.A_DIM)
             screen.refresh()
             pressed = screen.getch()
             if pressed == 3:
                 return
             if pressed == 27:
                 if category is None:
-                    return
+                    try:
+                        if draft != config or getattr(draft, 'forced', None):
+                            settings.save(draft)
+                            settings.adopt(config, draft)
+                        return
+                    except (OSError, ValueError) as exc:
+                        message = f'Could not save: {exc}'
+                        continue
                 selections[category] = index
                 category, index = parents.pop()
                 message = ''
@@ -454,13 +462,22 @@ def menu(screen, config, tracks):
                         return
                     if key == 'check_updates':
                         settings.save(draft)
-                        config.update(draft)
+                        settings.adopt(config, draft)
                         return 'check_updates'
                     if key == 'save':
                         settings.save(draft)
-                        config.update(draft)
+                        settings.adopt(config, draft)
                         return
-                    if key == 'preset':
+                    if key == 'export_settings':
+                        path = prompt(screen, 'Export path (new .json file; ~ is supported)')
+                        if path:
+                            message = f'Exported to {settings.export_file(path, draft)}'
+                    elif key == 'import_settings':
+                        path = prompt(screen, 'Import settings from .json file (~ is supported)')
+                        if path:
+                            draft = settings.import_file(path, draft)
+                            message = 'Imported. Esc or Ctrl+S saves; Discard cancels.'
+                    elif key == 'preset':
                         name = choose(screen, 'Appearance preset', ['Cancel'] + list(settings.PRESETS), 'Cancel')
                         if name != 'Cancel':
                             draft.update(settings.PRESETS[name])
@@ -510,7 +527,14 @@ def menu(screen, config, tracks):
         apply_theme(config)
 
 
+def setup_input(screen):
+    curses.set_escdelay(25)
+    screen.keypad(True)
+    screen.notimeout(False)
+
+
 def ui(screen, players, args, config):
+    setup_input(screen)
     curses.raw()  # Let Ctrl+S reach the menu instead of terminal flow control.
     try:
         curses.curs_set(0)
@@ -644,7 +668,7 @@ def ui(screen, players, args, config):
                 room = max(1, (lyric_bottom - lyric_top) // config['spacing'])
                 if doc.lines and position is not None:
                     lyric_time = position + offset
-                    mode = 'Word sync' if config['word_sync'] and doc.has_words else 'Line sync'
+                    mode = ('Word sync' if doc.has_words else 'Line sync (word timestamps unavailable)') if config['word_sync'] else 'Line sync'
                     if current.resolution >= 0.5:
                         mode += ' | coarse player timing'
                     elif playback.cadence >= 0.5:
@@ -726,6 +750,9 @@ def main():
     parser.add_argument('--lrc', help='Use a local LRC, enhanced LRC, or .lyricsfile.yaml file')
     parser.add_argument('--settings', action='store_true', help='Open interactive settings')
     parser.add_argument('--browser-script', action='store_true', help='Export your private browser userscript')
+    backup = parser.add_mutually_exclusive_group()
+    backup.add_argument('--export-settings', metavar='FILE', help='Export settings to a new JSON file')
+    backup.add_argument('--import-settings', metavar='FILE', help='Validate and save settings from JSON')
     parser.add_argument('--version', action='version', version=f'tlyrics {updates.VERSION}')
     parser.add_argument('--check-updates', action='store_true', help='Check for a new release')
     parser.add_argument('--update', action='store_true', help='Check and offer to install an update')
@@ -742,6 +769,13 @@ def main():
         config['offset'] = args.offset
     restart = None
     try:
+        if args.export_settings:
+            print(f'Exported to {settings.export_file(args.export_settings, config)}')
+            return 0
+        if args.import_settings:
+            settings.save(settings.import_file(args.import_settings, config))
+            print('Settings imported. Restart any running tlyrics instances to apply them.')
+            return 0
         if args.check_updates or args.update:
             release = updates.latest()
             if not updates.newer(release):

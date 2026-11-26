@@ -4,6 +4,7 @@ import math
 import os
 from pathlib import Path
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -14,12 +15,27 @@ import visualizer
 
 
 class VisualizerTests(unittest.TestCase):
-    def test_partial_frames_keep_newest_complete_frame(self):
-        decoder = visualizer.FrameDecoder(4)
-        self.assertIsNone(decoder.feed(bytes([0, 1])))
-        self.assertEqual(decoder.feed(bytes([2, 3, 4, 5, 6, 7, 8])), tuple(v / 255 for v in (4, 5, 6, 7)))
-        self.assertEqual(decoder.pending, bytes([8]))
-        self.assertEqual(decoder.feed(bytes([9, 10, 11])), tuple(v / 255 for v in (8, 9, 10, 11)))
+    def test_cancelled_worker_does_not_use_replacement_stop_event(self):
+        engine = visualizer.Visualizer()
+        original_stop = threading.Event()
+        def slow_setup(config):
+            original_stop.set()
+            engine.stop = threading.Event()
+        with patch.object(visualizer, 'Spectrum', side_effect=slow_setup), \
+             patch.object(visualizer.subprocess, 'Popen') as process:
+            engine._capture(settings.DEFAULTS, original_stop)
+        process.assert_not_called()
+
+    def test_partial_pcm_keeps_alignment_and_bounded_latest_window(self):
+        decoder = visualizer.PCMBuffer()
+        payload = bytes(range(256)) * 33
+        self.assertIsNone(decoder.feed(payload[:3]))
+        self.assertEqual(decoder.feed(payload[3:8192]), payload[:8192])
+        decoder.feed(payload[8192:8195])
+        self.assertEqual(len(decoder.pending), 3)
+        self.assertEqual(decoder.feed(payload[8195:8196]), payload[4:8196])
+        self.assertEqual(len(decoder.window), visualizer.FFT_SIZE * 4)
+        self.assertEqual(decoder.pending, b'')
 
     def test_default_off_never_starts_capture(self):
         engine = visualizer.Visualizer()
@@ -28,22 +44,24 @@ class VisualizerTests(unittest.TestCase):
             engine.close()
             process.assert_not_called()
 
-    def test_missing_cava_is_nonfatal(self):
+    def test_missing_capture_tool_is_nonfatal(self):
         engine = visualizer.Visualizer()
         with patch.object(visualizer.shutil, 'which', return_value=None):
             engine.configure(dict(settings.DEFAULTS, visualizer=True))
-        self.assertIn('Install cava', engine.message)
+        self.assertIn('needs parec', engine.message)
         self.assertIsNone(engine.thread)
         engine.close()
 
-    def test_capture_config_uses_output_monitor_and_rejects_injection(self):
+    def test_capture_command_uses_output_monitor_and_rejects_injection(self):
         config = dict(settings.DEFAULTS)
-        self.assertIn('source = auto', visualizer.capture_config(config))
-        self.assertIn('method = raw', visualizer.capture_config(config))
+        self.assertIn('--device=@DEFAULT_MONITOR@', visualizer.capture_command(config))
+        self.assertEqual(visualizer.capture_command(config)[0], 'parec')
         for bad in ['alsa_input.microphone', 'auto\n[output]', 'x.monitor\nfoo=bar']:
             with self.assertRaises(ValueError):
-                visualizer.capture_config(dict(config, viz_source=bad))
-        self.assertIn('source = auto', visualizer.capture_config(dict(config, viz_backend='pipewire', viz_source='x.monitor')))
+                visualizer.capture_command(dict(config, viz_source=bad))
+        command = visualizer.capture_command(dict(config, viz_backend='pipewire', viz_source='x.monitor'))
+        self.assertEqual(command[0], 'pw-record')
+        self.assertIn('stream.capture.sink=true', ' '.join(command))
 
     def test_input_discovery_only_offers_monitors(self):
         result = MagicMock(stdout='1 alsa_input.mic x\n2 alsa_output.speaker.monitor x\n')
@@ -86,12 +104,12 @@ class VisualizerTests(unittest.TestCase):
 
     def test_worker_handles_chunked_pipe_and_stops_process(self):
         with tempfile.TemporaryDirectory() as directory:
-            script = Path(directory) / 'cava'
+            script = Path(directory) / 'parec'
             pidfile = Path(directory) / 'pid'
             script.write_text('#!/usr/bin/env python3\nimport os,time\n'
                               f'open({str(pidfile)!r},"w").write(str(os.getpid()))\n'
-                              'while True:\n os.write(1,bytes(range(32))[:13])\n'
-                              ' os.write(1,bytes(range(32))[13:])\n time.sleep(.01)\n')
+                              'while True:\n os.write(1,bytes(8192)[:13])\n'
+                              ' os.write(1,bytes(8192)[13:])\n time.sleep(.01)\n')
             script.chmod(0o755)
             engine = visualizer.Visualizer()
             with patch.dict(os.environ, {'PATH': directory + os.pathsep + os.environ['PATH']}):
@@ -101,7 +119,7 @@ class VisualizerTests(unittest.TestCase):
                     while not engine.latest and time.monotonic() < deadline:
                         time.sleep(.01)
                     self.assertEqual(len(engine.latest), 32, engine.message)
-                    self.assertAlmostEqual(engine.latest[-1], 31 / 255)
+                    self.assertEqual(engine.latest, (0.0,) * 32)
                     thread = engine.thread
                 finally:
                     engine.close()
@@ -135,8 +153,9 @@ class AppearanceTests(unittest.TestCase):
             settings.save(config)
             self.assertEqual(settings.load(), config)
             config['viz_source'] = 'microphone\nsource = other'
-            settings.save(config)
-            self.assertEqual(settings.load()['viz_source'], 'auto')
+            with self.assertRaises(ValueError):
+                settings.save(config)
+            self.assertEqual(settings.load()['viz_source'], 'alsa_output.test.monitor')
 
     def test_progress_and_chrome(self):
         for style in settings.CHOICES['progress_style']:
@@ -159,7 +178,7 @@ class AppearanceTests(unittest.TestCase):
 
     def test_failed_process_start_reports_error_and_can_be_disabled(self):
         engine = visualizer.Visualizer()
-        with patch.object(visualizer.shutil, 'which', return_value='/usr/bin/cava'), \
+        with patch.object(visualizer.shutil, 'which', return_value='/usr/bin/parec'), \
              patch.object(visualizer.subprocess, 'Popen', side_effect=OSError('backend unavailable')):
             engine.configure(dict(settings.DEFAULTS, visualizer=True))
             engine.thread.join(timeout=2)
@@ -167,3 +186,46 @@ class AppearanceTests(unittest.TestCase):
         engine.configure(settings.DEFAULTS)
         self.assertIsNone(engine.thread)
         self.assertEqual(engine.message, '')
+
+
+class NativeSpectrumTests(unittest.TestCase):
+    @staticmethod
+    def tone(frequency, amplitude=.5, stereo=False, opposite=False):
+        import numpy as np
+        wave = np.sin(np.arange(visualizer.FFT_SIZE) * 2 * np.pi * frequency / visualizer.SAMPLE_RATE) * amplitude
+        samples = np.column_stack((wave, -wave if opposite else np.zeros_like(wave) if stereo else wave))
+        return (samples * 32767).astype('=i2').tobytes()
+
+    def test_tone_peaks_in_correct_logarithmic_band(self):
+        import numpy as np
+        for frequency in (100, 440, 1000, 6000, 12000):
+            analyzer = visualizer.Spectrum(dict(settings.DEFAULTS, viz_channels='mono', viz_autosens=False))
+            levels = analyzer.analyze(self.tone(frequency), 100)
+            peak = int(np.argmax(levels))
+            self.assertLessEqual(analyzer.left[peak] * visualizer.SAMPLE_RATE / visualizer.FFT_SIZE, frequency)
+            self.assertGreaterEqual(analyzer.right[peak] * visualizer.SAMPLE_RATE / visualizer.FFT_SIZE, frequency)
+            self.assertTrue(all(math.isfinite(v) and 0 <= v <= 1 for v in levels))
+
+    def test_stereo_channels_are_separate_and_mono_does_not_cancel(self):
+        analyzer = visualizer.Spectrum(settings.DEFAULTS)
+        levels = analyzer.analyze(self.tone(1000, stereo=True), 100)
+        self.assertGreater(max(levels[:16]), .5)
+        self.assertEqual(max(levels[16:]), 0)
+        mono = visualizer.Spectrum(dict(settings.DEFAULTS, viz_channels='mono'))
+        self.assertGreater(max(mono.analyze(self.tone(1000, opposite=True), 100)), .5)
+
+    def test_silence_noise_gate_and_sensitivity(self):
+        cfg = dict(settings.DEFAULTS, viz_autosens=False)
+        analyzer = visualizer.Spectrum(cfg)
+        self.assertEqual(analyzer.analyze(bytes(visualizer.FFT_SIZE * 4), 100), (0.0,) * 32)
+        self.assertEqual(max(analyzer.analyze(self.tone(1000, amplitude=.0001), 101)), 0)
+        low = visualizer.Spectrum(dict(cfg, viz_sensitivity=50)).analyze(self.tone(1000, .1), 100)
+        high = visualizer.Spectrum(dict(cfg, viz_sensitivity=200)).analyze(self.tone(1000, .1), 100)
+        self.assertGreater(max(high), max(low))
+
+    def test_bar_tops_use_fractional_cells(self):
+        config = dict(settings.DEFAULTS, viz_layout='bars', viz_peaks=False)
+        caps = visualizer.fractional_caps([.45], [.45], 5, 4, config)
+        self.assertTrue(caps)
+        self.assertIn('▇', caps.values())
+        self.assertTrue(all(0 <= y < 4 and 0 <= x < 5 for y, x in caps))

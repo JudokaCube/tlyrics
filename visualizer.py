@@ -1,4 +1,4 @@
-"""Optional CAVA analysis worker and bounded terminal spectrum layouts."""
+"""Native spectrum analysis worker and bounded terminal spectrum layouts."""
 from collections import deque
 import curses
 import math
@@ -6,10 +6,8 @@ import os
 import selectors
 import shutil
 import subprocess
-import tempfile
 import threading
 import time
-from pathlib import Path
 
 import rendering
 
@@ -30,43 +28,81 @@ def sources():
         return ['auto']
 
 
-def capture_config(config):
-    source = config['viz_source'] if config['viz_backend'] == 'pulse' else 'auto'
-    # Values loaded from settings are validated; protect generated INI as well.
+SAMPLE_RATE = 48000
+FFT_SIZE = 2048
+PCM_FRAME_BYTES = 4  # signed native-endian int16, left + right
+
+
+def capture_command(config):
+    """Audio tools only transport PCM; tlyrics does all spectrum analysis."""
+    source = config['viz_source']
     if source != 'auto' and (not source.endswith('.monitor') or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-' for c in source)):
         raise ValueError('Choose an output monitor from Visualizer / Audio & response')
-    return f'''[general]
-framerate = {config['viz_fps']}
-bars = {config['viz_bars']}
-autosens = {int(config['viz_autosens'])}
-sensitivity = {config['viz_sensitivity']}
-lower_cutoff_freq = 50
-higher_cutoff_freq = 12000
-sleep_timer = 0
-[input]
-method = {config['viz_backend']}
-source = {source}
-[output]
-method = raw
-raw_target = /dev/stdout
-data_format = binary
-bit_format = 8bit
-channels = {config['viz_channels']}
-[smoothing]
-noise_reduction = {config['viz_noise']}
-'''
+    if config['viz_backend'] == 'pipewire':
+        return ['pw-record', '--raw', '--format=s16', '--rate=48000', '--channels=2',
+                '--latency=20ms', '--target=auto', '--properties={ stream.capture.sink=true stream.monitor=true }', '-']
+    return ['parec', '--raw', '--format=s16ne', '--rate=48000', '--channels=2',
+            '--latency-msec=20', '--process-time-msec=10', '--client-name=tlyrics',
+            '--device=' + ('@DEFAULT_MONITOR@' if source == 'auto' else source)]
 
 
-class FrameDecoder:
-    def __init__(self, size):
-        self.size = size
+class PCMBuffer:
+    """Bounded sliding FFT window; retain byte alignment across fragmented reads."""
+    def __init__(self):
         self.pending = b''
+        self.window = b''
+        self.generation = 0
 
     def feed(self, payload):
         data = self.pending + payload
-        count = len(data) // self.size
-        self.pending = data[count * self.size:]
-        return tuple(v / 255 for v in data[(count - 1) * self.size:count * self.size]) if count else None
+        end = len(data) // PCM_FRAME_BYTES * PCM_FRAME_BYTES
+        self.pending = data[end:]
+        if end:
+            self.window = (self.window + data[:end])[-FFT_SIZE * PCM_FRAME_BYTES:]
+            self.generation += 1
+        return self.window if len(self.window) == FFT_SIZE * PCM_FRAME_BYTES else None
+
+
+class Spectrum:
+    """Hann-windowed FFT, logarithmic bands, noise gate and time-based gain."""
+    def __init__(self, config):
+        import numpy as np
+        self.np = np
+        self.config = config
+        self.window = np.hanning(FFT_SIZE)[:, None]
+        self.scale = 2 / self.window.sum()
+        self.count = config['viz_bars'] // (2 if config['viz_channels'] == 'stereo' else 1)
+        edges = np.geomspace(45, 16000, self.count + 1) * FFT_SIZE / SAMPLE_RATE
+        self.left = np.clip(np.floor(edges[:-1]).astype(int), 1, FFT_SIZE // 2)
+        self.right = np.minimum(FFT_SIZE // 2 + 1, np.maximum(self.left + 1, np.ceil(edges[1:]).astype(int)))
+        self.reference = .08
+        self.last = None
+
+    def analyze(self, payload, now):
+        np = self.np
+        samples = np.frombuffer(payload, dtype='=i2').reshape(FFT_SIZE, 2).astype(np.float64) / 32768
+        samples -= samples.mean(axis=0)
+        magnitude = np.abs(np.fft.rfft(samples * self.window, axis=0)) * self.scale
+        power = magnitude ** 2
+        summed = np.concatenate((np.zeros((1, 2)), np.cumsum(power, axis=0)))
+        bands = np.sqrt(np.maximum(0, summed[self.right] - summed[self.left]))
+        # Average channel energies for mono; out-of-phase stereo must not cancel.
+        if self.config['viz_channels'] == 'mono':
+            values = np.sqrt(np.mean(bands ** 2, axis=1))
+        else:
+            values = np.concatenate((bands[::-1, 0], bands[:, 1]))
+        dt = 1 / self.config['viz_fps'] if self.last is None else max(0, min(1, now - self.last))
+        self.last = now
+        peak = float(values.max())
+        self.reference = max(.001, peak, self.reference * math.exp(-dt * .6))
+        gain = (.85 / self.reference) if self.config['viz_autosens'] else self.config['viz_sensitivity'] / 100
+        noise = self.config['viz_noise']
+        gate = 10 ** ((-90 + noise * .35) / 20)
+        floor = -60 + noise * .2
+        db = 20 * np.log10(np.maximum(values * gain, 1e-12))
+        levels = np.clip((db - floor) / -floor, 0, 1)
+        levels[values < gate] = 0
+        return tuple(float(v) for v in levels)
 
 
 class Visualizer:
@@ -96,47 +132,57 @@ class Visualizer:
             self.latest, self.stamp, self.message = (), 0.0, ''
         if signature is None:
             return
-        if not shutil.which('cava'):
-            self.message = 'Install cava to enable the audio visualizer.'
+        tool = capture_command(config)[0]
+        if not shutil.which(tool):
+            self.message = f'Audio capture needs {tool}; install your audio service tools or select the other backend.'
             return
         self.stop = threading.Event()
         self.message = 'Connecting to audio output...'
-        self.thread = threading.Thread(target=self._capture, args=(dict(config),), daemon=True)
+        self.thread = threading.Thread(target=self._capture, args=(dict(config), self.stop), daemon=True)
         self.thread.start()
 
-    def _capture(self, config):
+    def _capture(self, config, stop):
         process = None
         errors = b''
         try:
-            with tempfile.TemporaryDirectory(prefix='tlyrics-cava-') as directory:
-                path = Path(directory) / 'config'
-                path.write_text(capture_config(config))
-                process = subprocess.Popen(['cava', '-p', str(path)], stdin=subprocess.DEVNULL,
-                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
-                decoder = FrameDecoder(config['viz_bars'])
-                started = time.monotonic()
-                with selectors.DefaultSelector() as selector:
-                    selector.register(process.stdout, selectors.EVENT_READ, 'audio')
-                    selector.register(process.stderr, selectors.EVENT_READ, 'error')
-                    while not self.stop.is_set():
-                        for key, _ in selector.select(.1):
-                            payload = os.read(key.fileobj.fileno(), 65536)
-                            if not payload:
-                                selector.unregister(key.fileobj)
-                                continue
-                            if key.data == 'error':
-                                errors = (errors + payload)[-2000:]
-                            else:
-                                frame = decoder.feed(payload)
-                                if frame is not None:
-                                    with self.lock:
-                                        self.latest, self.stamp, self.message = frame, time.monotonic(), ''
-                        if process.poll() is not None:
-                            detail = rendering.safe_text(errors.decode(errors='replace')).strip()
-                            raise RuntimeError(detail[:150] or 'Audio backend stopped; toggle the visualizer to retry.')
+            analyzer = Spectrum(config)
+            if stop.is_set():
+                return
+            process = subprocess.Popen(capture_command(config), stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+            decoder = PCMBuffer()
+            started = time.monotonic()
+            next_analysis = started
+            analyzed = -1
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, 'audio')
+                selector.register(process.stderr, selectors.EVENT_READ, 'error')
+                while not stop.is_set():
+                    for key, _ in selector.select(.02):
+                        payload = os.read(key.fileobj.fileno(), 65536)
+                        if not payload:
+                            selector.unregister(key.fileobj)
+                            continue
+                        if key.data == 'error':
+                            errors = (errors + payload)[-2000:]
+                        else:
+                            decoder.feed(payload)
+                    now = time.monotonic()
+                    if now >= next_analysis and decoder.generation != analyzed and len(decoder.window) == FFT_SIZE * PCM_FRAME_BYTES:
+                        frame = analyzer.analyze(decoder.window, now)
+                        next_analysis = now + 1 / config['viz_fps']
+                        analyzed = decoder.generation
                         with self.lock:
-                            if not self.stamp and time.monotonic() - started > 5:
-                                self.message = 'No audio frames. Check the output device or audio backend.'
+                            self.latest, self.stamp, self.message = frame, now, ''
+                    if process.poll() is not None:
+                        detail = rendering.safe_text(errors.decode(errors='replace')).strip()
+                        raise RuntimeError(detail[:150] or 'Audio capture stopped; toggle the visualizer to retry.')
+                    with self.lock:
+                        if not self.stamp and now - started > 5:
+                            self.message = 'No audio frames. Check the output device or audio backend.'
+        except ImportError:
+            with self.lock:
+                self.message = 'Spectrum analysis needs NumPy; run sh install.sh to repair the installation.'
         except (OSError, ValueError, RuntimeError) as exc:
             with self.lock:
                 self.message = f'Visualizer: {exc}'
@@ -251,6 +297,33 @@ def grid(levels, peaks, history, width, height, config):
     return cells
 
 
+def fractional_caps(levels, peaks, columns, height, config):
+    """Sub-cell bar edges avoid whole-row jumps on short terminal panels."""
+    glyphs = {}
+    if config['viz_layout'] != 'bars' or config['viz_glyph'] != 'blocks' or not levels:
+        return glyphs
+    count = min(len(levels), columns)
+    for i in range(count):
+        value = max(levels[i * len(levels) // count:(i + 1) * len(levels) // count])
+        start = i * columns // count
+        span = max(1, (i + 1) * columns // count - start - config['viz_gap'])
+        units = value * height
+        whole = math.floor(units)
+        fraction = units - whole
+        if value > .015 and fraction > .001:
+            row = height - whole - 1
+            char = '▁▂▃▄▅▆▇█'[min(7, max(0, math.ceil(fraction * 8) - 1))]
+            for dx in range(span):
+                glyphs[row, start + dx] = char
+        if config['viz_peaks'] and peaks:
+            peak = peaks[min(len(peaks) - 1, i * len(peaks) // count)]
+            if peak - value > .5 / height:
+                row = max(0, height - math.ceil(peak * height))
+                for dx in range(span):
+                    glyphs[row, start + dx] = '▔'
+    return glyphs
+
+
 def draw(screen, engine, config, panel):
     if panel is None:
         return
@@ -267,6 +340,7 @@ def draw(screen, engine, config, panel):
             pass
         return
     cells = grid(levels, engine.peaks, engine.history, columns, height, config)
+    caps = fractional_caps(levels, engine.peaks, columns, height, config)
     glyph = {'blocks': '█', 'thin': '│', 'dots': '•', 'ascii': '#'}[config['viz_glyph']]
     rich = curses.has_colors() and curses.COLORS >= 256 and curses.COLOR_PAIRS >= 80
     mode = config['viz_colour']
@@ -284,7 +358,7 @@ def draw(screen, engine, config, panel):
         else:
             phase = col / max(1, columns - 1) if horizontal else intensity
             attr = palette[min(7, int(phase * 7))]
-        char = (' .:-=+*#%@'[min(9, int(intensity * 9))] if waterfall else glyph)
+        char = (' .:-=+*#%@'[min(9, int(intensity * 9))] if waterfall else caps.get((row, col), glyph))
         rows[row].append((col, char, attr))
     for row, values in enumerate(rows):
         runs = []

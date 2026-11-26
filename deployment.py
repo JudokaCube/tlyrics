@@ -119,7 +119,7 @@ def install(source, root=None, binary=None, update=False):
                 run([sys.executable, '-m', 'venv', '--system-site-packages', str(environment)])
                 python = str(environment / 'bin/python')
                 run([python, '-m', 'pip', 'install', '--disable-pip-version-check', '-r', str(target / 'requirements.txt')])
-            run([python, '-c', 'import curses, dbus, yaml'])
+            run([python, '-c', 'import curses, dbus, yaml, numpy'])
             result = run([python, str(target / 'tlyrics.py'), '--version'])
             if result.stdout.strip() != f'tlyrics {version}':
                 raise ValueError('Installed version did not match the release')

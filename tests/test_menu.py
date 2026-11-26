@@ -36,7 +36,7 @@ class MenuTests(unittest.TestCase):
         self.assertLessEqual(theme.call_count, 3)
 
     def test_cancel_discards_unsaved_changes(self):
-        config, _, save, _, _, _ = self.run_menu([curses.KEY_DOWN, 10, 10, 27, 27], lambda *args: 'green')
+        config, _, save, _, _, _ = self.run_menu([curses.KEY_DOWN, 10, 10, 27, curses.KEY_UP, curses.KEY_UP, 10], lambda *args: 'green')
         self.assertEqual(config['theme'], settings.DEFAULTS['theme'])
         save.assert_not_called()
 
@@ -55,13 +55,13 @@ class MenuTests(unittest.TestCase):
     def test_every_editable_setting_has_exactly_one_category(self):
         keys = [key for rows in tlyrics.SETTINGS_GROUPS.values() for key, _ in rows]
         self.assertEqual(len(keys), len(set(keys)))
-        self.assertEqual(set(settings.DEFAULTS) - {'aliases', 'song_offsets'}, set(keys) - set(tlyrics.SETTINGS_GROUPS) - {'preset', 'browser', 'add', 'remove', 'check_updates'})
+        self.assertEqual(set(settings.DEFAULTS) - {'aliases', 'song_offsets'}, set(keys) - set(tlyrics.SETTINGS_GROUPS) - {'export_settings', 'import_settings', 'preset', 'browser', 'add', 'remove', 'check_updates'})
 
     def test_invalid_local_file_does_not_create_background_workers(self):
         from types import SimpleNamespace
         screen = MagicMock()
         args = SimpleNamespace(lrc='/missing/tlyrics-test-song.lrc', settings=False)
-        with patch('curses.raw'), patch('curses.curs_set'), patch.object(tlyrics, 'apply_theme'), \
+        with patch.object(tlyrics, 'setup_input'), patch('curses.raw'), patch('curses.curs_set'), patch.object(tlyrics, 'apply_theme'), \
              patch.object(tlyrics.concurrent.futures, 'ThreadPoolExecutor') as workers:
             with self.assertRaises(FileNotFoundError):
                 tlyrics.ui(screen, MagicMock(), args, copy.deepcopy(settings.DEFAULTS))
@@ -82,7 +82,12 @@ class MenuTests(unittest.TestCase):
         self.assertFalse(config['visualizer'])
 
     def test_preset_draft_can_be_cancelled(self):
-        keys = [curses.KEY_DOWN, 10] + [curses.KEY_DOWN] * 7 + [10, 27, 27]
+        keys = [curses.KEY_DOWN, 10] + [curses.KEY_DOWN] * 7 + [10, 27, curses.KEY_UP, curses.KEY_UP, 10]
         config, _, save, _, _, _ = self.run_menu(keys, lambda *args: 'neon')
         self.assertEqual(config, settings.DEFAULTS)
         save.assert_not_called()
+
+    def test_escape_saves_when_leaving_settings(self):
+        config, _, save, _, _, _ = self.run_menu([curses.KEY_DOWN, 10, 10, 27, 27], lambda *args: 'green')
+        self.assertEqual(config['theme'], 'green')
+        save.assert_called_once()

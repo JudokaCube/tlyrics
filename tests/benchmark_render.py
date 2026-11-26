@@ -18,6 +18,18 @@ with patch('curses.has_colors',return_value=True),patch('curses.COLORS',256,crea
 print('median_ms',round(statistics.median(samples),3),'p95_ms',round(sorted(samples)[379],3),'draw_calls_per_frame',screen.calls/400)
 
 import visualizer
+import numpy as np
+signal = np.sin(np.arange(visualizer.FFT_SIZE) * (2 * np.pi * 440 / visualizer.SAMPLE_RATE))
+pcm = (np.column_stack((signal, signal)) * 16000).astype('=i2').tobytes()
+analyzer = visualizer.Spectrum(dict(settings.DEFAULTS, viz_bars=64))
+samples = []
+for i in range(400):
+    start = time.perf_counter()
+    analyzer.analyze(pcm, i / 60)
+    samples.append((time.perf_counter() - start) * 1000)
+print('native FFT median_ms', round(statistics.median(samples), 3),
+      'p95_ms', round(sorted(samples)[379], 3))
+
 for layout in settings.CHOICES['viz_layout']:
     engine = visualizer.Visualizer()
     engine.latest = tuple((i % 8 + 1) / 8 for i in range(32))
