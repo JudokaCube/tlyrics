@@ -13,7 +13,7 @@ class MenuTests(unittest.TestCase):
         screen = MagicMock()
         screen.getmaxyx.return_value = size
         screen.getch.side_effect = keys
-        with patch.object(tlyrics, 'apply_theme', return_value=0) as theme, \
+        with patch('curses.has_colors', return_value=False), patch.object(tlyrics, 'apply_theme', return_value=0) as theme, \
              patch.object(tlyrics, 'choose', side_effect=choice) as chooser, \
              patch.object(settings, 'save', side_effect=save_error) as save:
             result = tlyrics.menu(screen, config, [])
@@ -55,7 +55,7 @@ class MenuTests(unittest.TestCase):
     def test_every_editable_setting_has_exactly_one_category(self):
         keys = [key for rows in tlyrics.SETTINGS_GROUPS.values() for key, _ in rows]
         self.assertEqual(len(keys), len(set(keys)))
-        self.assertEqual(set(settings.DEFAULTS) - {'aliases', 'song_offsets'}, set(keys) - {'browser', 'add', 'remove', 'check_updates'})
+        self.assertEqual(set(settings.DEFAULTS) - {'aliases', 'song_offsets'}, set(keys) - set(tlyrics.SETTINGS_GROUPS) - {'preset', 'browser', 'add', 'remove', 'check_updates'})
 
     def test_invalid_local_file_does_not_create_background_workers(self):
         from types import SimpleNamespace
@@ -66,3 +66,23 @@ class MenuTests(unittest.TestCase):
             with self.assertRaises(FileNotFoundError):
                 tlyrics.ui(screen, MagicMock(), args, copy.deepcopy(settings.DEFAULTS))
             workers.assert_not_called()
+
+    def test_nested_appearance_back_and_save(self):
+        keys = [curses.KEY_DOWN, 10] + [curses.KEY_DOWN] * 8 + [10, 10, 27, 27, 19]
+        config, _, save, chooser, _, _ = self.run_menu(keys, lambda *args: 'midnight')
+        self.assertEqual(config['background'], 'midnight')
+        self.assertEqual(chooser.call_args.args[1], 'Background')
+        save.assert_called_once()
+
+    def test_visualizer_subcategory_edit(self):
+        keys = [curses.KEY_DOWN] * 6 + [10] + [curses.KEY_DOWN] * 5 + [10, 10, 27, 27, 19]
+        config, _, save, chooser, _, _ = self.run_menu(keys, lambda *args: 'pipewire')
+        self.assertEqual(config['viz_backend'], 'pipewire')
+        self.assertEqual(chooser.call_args.args[1], 'Audio backend')
+        self.assertFalse(config['visualizer'])
+
+    def test_preset_draft_can_be_cancelled(self):
+        keys = [curses.KEY_DOWN, 10] + [curses.KEY_DOWN] * 7 + [10, 27, 27]
+        config, _, save, _, _, _ = self.run_menu(keys, lambda *args: 'neon')
+        self.assertEqual(config, settings.DEFAULTS)
+        save.assert_not_called()

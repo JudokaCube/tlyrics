@@ -16,3 +16,24 @@ with patch('curses.has_colors',return_value=True),patch('curses.COLORS',256,crea
     for i in range(400):
         start=time.perf_counter();rendering.draw(screen,doc,100+i/60,config);samples.append((time.perf_counter()-start)*1000)
 print('median_ms',round(statistics.median(samples),3),'p95_ms',round(sorted(samples)[379],3),'draw_calls_per_frame',screen.calls/400)
+
+import visualizer
+for layout in settings.CHOICES['viz_layout']:
+    engine = visualizer.Visualizer()
+    engine.latest = tuple((i % 8 + 1) / 8 for i in range(32))
+    engine.stamp = time.monotonic()
+    engine.levels = list(engine.latest)
+    engine.peaks = list(engine.latest)
+    engine.history.extend([engine.latest] * 20)
+    cfg = dict(settings.DEFAULTS, visualizer=True, viz_layout=layout)
+    samples = []
+    screen.calls = 0
+    with patch('curses.has_colors', return_value=True), patch('curses.COLORS', 256, create=True), \
+         patch('curses.COLOR_PAIRS', 256, create=True), patch('curses.color_pair', new=lambda n: n << 8):
+        for i in range(100):
+            engine.stamp = time.monotonic()
+            start = time.perf_counter()
+            visualizer.draw(screen, engine, cfg, (28, 7))
+            samples.append((time.perf_counter() - start) * 1000)
+    print('visualizer', layout, 'median_ms', round(statistics.median(samples), 3),
+          'p95_ms', round(sorted(samples)[94], 3), 'draw_calls_per_frame', screen.calls / 100)

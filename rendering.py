@@ -9,6 +9,9 @@ PALETTES = {
     'ocean': [31, 38, 45, 81, 117, 153, 159, 195],
     'sunset': [196, 202, 208, 214, 220, 213, 207, 201],
     'aurora': [57, 63, 69, 75, 81, 87, 86, 85],
+    'rose': [125, 161, 168, 175, 182, 189, 225, 231],
+    'forest': [22, 28, 34, 40, 76, 112, 150, 194],
+    'ice': [24, 31, 38, 74, 110, 153, 195, 231],
     'rainbow': [196, 208, 226, 46, 51, 33, 93, 201],
 }
 
@@ -34,9 +37,18 @@ def configure(config):
         background = -1
     except curses.error:
         background = curses.COLOR_BLACK
-    colors = dict(cyan=curses.COLOR_CYAN, green=curses.COLOR_GREEN, purple=curses.COLOR_MAGENTA,
+    if config.get('background', 'terminal') != 'terminal':
+        background = {'black': 0, 'midnight': 17, 'charcoal': 235}[config['background']]
+        if curses.COLORS < 256:
+            background = curses.COLOR_BLACK
+    colors = dict(blue=curses.COLOR_BLUE, red=curses.COLOR_RED, pink=curses.COLOR_MAGENTA,
+                  teal=curses.COLOR_CYAN, cyan=curses.COLOR_CYAN, green=curses.COLOR_GREEN, purple=curses.COLOR_MAGENTA,
                   amber=curses.COLOR_YELLOW, white=curses.COLOR_WHITE)
+    if curses.COLORS >= 256:
+        colors.update(pink=211, teal=43, blue=75, red=203, green=84, amber=215,
+                      purple=141, cyan=81, white=255)
     curses.init_pair(1, colors[config['theme']], background)
+    curses.init_pair(2, -1 if background == -1 else curses.COLOR_WHITE, background)
     if curses.COLORS >= 256 and curses.COLOR_PAIRS >= 50:
         for index, color in enumerate(PALETTES[config['palette']]):
             curses.init_pair(16 + index, color, background)
@@ -47,6 +59,9 @@ def configure(config):
             lifted = 16 + 36 * min(5, red + lift) + 6 * min(5, green + lift) + min(5, blue + lift)
             curses.init_pair(32 + index, lifted, background)
         curses.init_pair(48, 255 if config['glow'] == 'bright' else 252, background)
+    if curses.COLORS >= 256 and curses.COLOR_PAIRS >= 80:
+        for index, color in enumerate(PALETTES[config.get('viz_palette', 'ocean')]):
+            curses.init_pair(64 + index, color, background)
     return curses.color_pair(1) | curses.A_BOLD
 
 
@@ -71,7 +86,8 @@ def effect_attr(config, progress, position, glowing=True):
 def glyphs(doc, index, position, config):
     line = doc.lines[index]
     active = doc.active(index, position)
-    prefix = ('> ' if active else '  ')
+    marker = {'chevron': '> ', 'dot': '• ', 'bar': '▎ ', 'none': '  '}[config.get('active_marker', 'chevron')]
+    prefix = marker if active else '  '
     if config['timestamps']:
         prefix += f'{max(0, int(line.start)) // 60}:{max(0, int(line.start)) % 60:02d}  '
     dim = curses.A_DIM if config['dim_inactive'] else curses.A_NORMAL
@@ -169,11 +185,14 @@ def inactive_rows(text, start, timestamps, dim, columns):
     return tuple(tuple(row) for row in wrap(glyph_list, columns))
 
 
-def draw(screen, doc, position, config, top=8):
+def draw(screen, doc, position, config, top=8, bottom=None):
     h, w = screen.getmaxyx()
     if not doc.lines or w < 6 or h <= top + 2:
         return
-    rows_available = max(1, (h - top - 3) // config['spacing'])
+    bottom = h - 3 if bottom is None else min(h - 3, bottom)
+    if bottom <= top:
+        return
+    rows_available = max(1, (bottom - top) // config['spacing'])
     columns = min(w - 4, config['max_width'] or w - 4)
     index = max(0, doc.index(position))
     radius = rows_available if config['layout'] == 'scroll' else 1
@@ -197,7 +216,39 @@ def draw(screen, doc, position, config, top=8):
     target = target if word_target is None else word_target
     start = max(0, min(target - rows_available // 2, len(rows) - rows_available))
     visible = rows[start:start + rows_available]
-    y = top if config['layout'] == 'scroll' else max(top, top + (h - top - 3 - len(visible) * config['spacing']) // 2)
+    y = top if config['layout'] == 'scroll' else max(top, top + (bottom - top - len(visible) * config['spacing']) // 2)
     for row in visible:
         put_row(screen, y, row, config['align'] == 'center')
         y += config['spacing']
+
+
+def chrome(screen, config):
+    """Apply the chosen background and frame before drawing contents."""
+    if curses.has_colors() and screen.getbkgd() != (ord(' ') | curses.color_pair(2)):
+        screen.bkgd(' ', curses.color_pair(2))
+    screen.erase()
+    style = config.get('border', 'none')
+    h, w = screen.getmaxyx()
+    if style == 'none' or h < 4 or w < 6:
+        return
+    tl, tr, bl, br, horizontal, vertical = {
+        'line': ('┌', '┐', '└', '┘', '─', '│'),
+        'rounded': ('╭', '╮', '╰', '╯', '─', '│'),
+        'double': ('╔', '╗', '╚', '╝', '═', '║'),
+    }[style]
+    attr = curses.color_pair(1) if curses.has_colors() else curses.A_DIM
+    strokes = [(0, 0, tl + horizontal * (w - 2) + tr),
+               (h - 1, 0, bl + horizontal * (w - 2) + br)]
+    strokes += [(row, col, vertical) for row in range(1, h - 1) for col in (0, w - 1)]
+    for row, col, text in strokes:
+        try:
+            screen.addstr(row, col, text, attr)
+        except curses.error:
+            pass
+
+
+def progress_bar(fraction, columns, style):
+    filled = min(columns, max(0, int(columns * fraction)))
+    on, off = {'line': ('━', '─'), 'blocks': ('█', '░'),
+               'dots': ('●', '·'), 'ascii': ('=', '-')}[style]
+    return on * filled + off * (columns - filled)

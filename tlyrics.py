@@ -17,6 +17,7 @@ import settings
 import browser_bridge
 import lyrics
 import rendering
+import visualizer
 import players as player_catalog
 import updates
 from timing import PlaybackClock
@@ -362,10 +363,32 @@ SETTINGS_GROUPS = {
 }
 
 
+ROOT_CATEGORIES = tuple(SETTINGS_GROUPS) + ('Visualizer',)
+SETTINGS_GROUPS['Appearance'] += [('preset', 'Apply appearance preset'), ('Layout details', 'Layout details >')]
+SETTINGS_GROUPS.update({
+    'Layout details': [('background', 'Background'), ('border', 'Border'), ('title_style', 'Song title style'),
+                       ('show_header', 'App heading'), ('show_status', 'Playback details'),
+                       ('show_hints', 'Keyboard hints'), ('progress_style', 'Progress style'),
+                       ('active_marker', 'Active lyric marker')],
+    'Visualizer': [('visualizer', 'Enable visualizer'), ('viz_layout', 'Layout'),
+                   ('viz_position', 'Position'), ('viz_height', 'Height (rows)'),
+                   ('viz_width', 'Width (0 = auto)'), ('Audio & response', 'Audio & response >'),
+                   ('Visualizer style', 'Style & colours >')],
+    'Audio & response': [('viz_backend', 'Audio backend'), ('viz_source', 'Output monitor (PulseAudio)'),
+                         ('viz_bars', 'Frequency bands'), ('viz_channels', 'Channels'),
+                         ('viz_fps', 'Analysis frame rate'), ('viz_autosens', 'Automatic sensitivity'),
+                         ('viz_sensitivity', 'Manual sensitivity (%)'), ('viz_noise', 'Noise reduction (%)'),
+                         ('viz_smoothing', 'Response smoothing'), ('viz_decay', 'Peak decay')],
+    'Visualizer style': [('viz_colour', 'Colour mode'), ('viz_palette', 'Palette'),
+                         ('viz_gradient', 'Gradient direction'), ('viz_glyph', 'Bar character'),
+                         ('viz_gap', 'Bar spacing'), ('viz_peaks', 'Peak caps (bars)')],
+})
+
+
 def menu(screen, config, tracks):
     draft = dict(config, aliases=list(config['aliases']), song_offsets=dict(config['song_offsets']))
     category = None
-    root_index = 0
+    parents = []
     selections = {}
     theme_key = None
     index = 0
@@ -373,14 +396,14 @@ def menu(screen, config, tracks):
     screen.timeout(-1)
     try:
         while True:
-            rows = (SETTINGS_GROUPS[category] + [('back', 'Back to categories')] if category else
-                    [(name, name + ' >') for name in SETTINGS_GROUPS] +
+            rows = (SETTINGS_GROUPS[category] + [('back', 'Back')] if category else
+                    [(name, name + ' >') for name in ROOT_CATEGORIES] +
                     [('save', 'Save and return'), ('cancel', 'Discard and return')])
-            new_theme = (draft['theme'], draft['palette'], draft['glow'])
+            new_theme = tuple(draft[k] for k in ('theme', 'palette', 'glow', 'background', 'viz_palette'))
             if new_theme != theme_key:
                 accent = apply_theme(draft)
                 theme_key = new_theme
-            screen.erase()
+            rendering.chrome(screen, draft)
             h, w = screen.getmaxyx()
             heading = f'Settings / {category}' if category else f'Terminal Lyrics {updates.VERSION} / Settings'
             put(screen, 1, heading, accent)
@@ -408,7 +431,8 @@ def menu(screen, config, tracks):
                 if category is None:
                     return
                 selections[category] = index
-                category, index, message = None, root_index, ''
+                category, index = parents.pop()
+                message = ''
                 continue
             if pressed == curses.KEY_UP:
                 index = (index - 1) % len(rows)
@@ -418,12 +442,13 @@ def menu(screen, config, tracks):
                 key = 'save' if pressed == 19 else rows[index][0]
                 try:
                     if key in SETTINGS_GROUPS:
-                        root_index = index
+                        parents.append((category, index))
                         category, index, message = key, selections.get(key, 0), ''
                         continue
                     if key == 'back':
                         selections[category] = index
-                        category, index, message = None, root_index, ''
+                        category, index = parents.pop()
+                        message = ''
                         continue
                     if key == 'cancel':
                         return
@@ -435,7 +460,15 @@ def menu(screen, config, tracks):
                         settings.save(draft)
                         config.update(draft)
                         return
-                    if key == 'player':
+                    if key == 'preset':
+                        name = choose(screen, 'Appearance preset', ['Cancel'] + list(settings.PRESETS), 'Cancel')
+                        if name != 'Cancel':
+                            draft.update(settings.PRESETS[name])
+                            message = f'{name.title()} preset applied. Ctrl+S to save.'
+                    elif key == 'viz_source':
+                        values = list(dict.fromkeys(visualizer.sources() + [draft[key]]))
+                        draft[key] = choose(screen, 'Output monitor (PipeWire uses the default output)', values, draft[key])
+                    elif key == 'player':
                         values = list(dict.fromkeys(['auto', 'spotify', 'youtube-music', 'browser', 'spotify-web',
                                                      'youtube-music-web', 'limusic', draft['player']] + [t.player for t in tracks]))
                         draft[key] = choose(screen, 'Supported music player', values, draft[key])
@@ -509,11 +542,13 @@ def ui(screen, players, args, config):
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     lyrics_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     updater = updates.Manager()
+    visuals = visualizer.Visualizer()
     try:
         if check_updates:
             updater.check(config, manual=True)
         while True:
             frame_started = time.monotonic()
+            visuals.configure(config if screen.getmaxyx()[0] >= 18 else dict(config, visualizer=False))
             restart = updater.poll()
             if restart:
                 return restart
@@ -585,26 +620,28 @@ def ui(screen, players, args, config):
                     data = result
                     doc = parsed
                 future = None
-            screen.erase()
+            rendering.chrome(screen, config)
             h, w = screen.getmaxyx()
-            put(screen, 0, f'tlyrics {updates.VERSION}', accent)
+            lyric_top, lyric_bottom, panel = visualizer.region(h, config)
+            if config['show_header']:
+                put(screen, 0, f'tlyrics {updates.VERSION}', accent)
             if updater.message:
                 put(screen, 1, updater.message, curses.A_DIM)
             if bridge_error:
                 put(screen, 1, bridge_error)
             if current and current.title:
-                put(screen, 2, current.title, curses.A_BOLD, True)
+                put(screen, 2, current.title, {'bold': curses.A_BOLD, 'accent': accent, 'plain': 0}[config['title_style']], True)
                 put(screen, 3, current.artist, curses.A_DIM, True)
                 position = playback.seconds()
                 song_offset = config['song_offsets'].get(settings.song_key(current), 0.0)
                 offset = config['offset'] + song_offset
                 stamp = clock(position) if position is not None else '--:--'
-                put(screen, 5, f'{current.player} · {current.status} · {stamp} / {clock(current.duration)} · offset {offset:+.2f}s', centered=True)
+                if config['show_status']:
+                    put(screen, 5, f'{current.player} · {current.status} · {stamp} / {clock(current.duration)} · offset {offset:+.2f}s', centered=True)
                 if config["progress"] and position is not None and current.duration:
                     length = max(1, w - 6)
-                    filled = min(length, max(0, int(length * position / current.duration)))
-                    put(screen, 6, '━' * filled + '─' * (length - filled), accent)
-                room = max(1, (h - 11) // config["spacing"])
+                    put(screen, 6, rendering.progress_bar(position / current.duration, length, config['progress_style']), accent)
+                room = max(1, (lyric_bottom - lyric_top) // config['spacing'])
                 if doc.lines and position is not None:
                     lyric_time = position + offset
                     mode = 'Word sync' if config['word_sync'] and doc.has_words else 'Line sync'
@@ -612,10 +649,11 @@ def ui(screen, players, args, config):
                         mode += ' | coarse player timing'
                     elif playback.cadence >= 0.5:
                         mode += ' | interpolating player clock'
-                    put(screen, 7, doc.warning or mode, curses.A_DIM, True)
-                    rendering.draw(screen, doc, lyric_time, config)
+                    if config['show_status'] or doc.warning:
+                        put(screen, 7, doc.warning or mode, curses.A_DIM, True)
+                    rendering.draw(screen, doc, lyric_time, config, top=lyric_top, bottom=lyric_bottom)
                 elif future:
-                    put(screen, h // 2, 'Finding lyrics…', centered=True)
+                    put(screen, (lyric_top + lyric_bottom) // 2, 'Finding lyrics…', centered=True)
                 else:
                     plain = doc.plain or data.get('plainLyrics') or ''
                     message = data.get('message') or doc.warning or ('Instrumental ♪' if data.get('instrumental') else
@@ -625,10 +663,12 @@ def ui(screen, players, args, config):
                     display = [line.text for line in doc.lines] if doc.lines else plain.splitlines()
                     scroll = min(scroll, max(0, len(display) - room))
                     for row, words in enumerate(display[scroll:scroll + room]):
-                        put(screen, 8 + row * config['spacing'], words, centered=config['align'] == 'center')
+                        put(screen, lyric_top + row * config['spacing'], words, centered=config['align'] == 'center')
             else:
-                put(screen, h // 2, error or 'Waiting for a supported music player...', centered=True)
-            put(screen, h - 2, 'q quit   u updates   s settings   [ / ] timing   0 reset   r retry   ↑ / ↓ scroll', curses.A_DIM, True)
+                put(screen, (lyric_top + lyric_bottom) // 2, error or 'Waiting for a supported music player...', centered=True)
+            visualizer.draw(screen, visuals, config, panel)
+            if config['show_hints']:
+                put(screen, h - 2, 'q quit  s settings  v visualizer  u updates  [ / ] timing  0 reset  r retry', curses.A_DIM, True)
             screen.refresh()
             # Drawing time is part of the frame budget, not an extra delay.
             remaining = 1 / config['fps'] - (time.monotonic() - frame_started)
@@ -641,6 +681,12 @@ def ui(screen, players, args, config):
                     updater.check(config, manual=True)
                 accent = apply_theme(config)
                 next_poll = 0
+            if pressed == ord('v'):
+                config['visualizer'] = not config['visualizer']
+                try:
+                    settings.save(config)
+                except OSError as exc:
+                    bridge_error = f'Could not save visualizer setting: {exc}'
             if pressed == ord('u'):
                 updater.check(config, manual=True)
             if current and pressed in (ord('['), ord(']'), ord('0')):
@@ -663,6 +709,7 @@ def ui(screen, players, args, config):
             elif pressed == ord('r') and current and not future and not local:
                 future = lyrics_pool.submit(load_lyrics, current, True, config["cache"])
     finally:
+        visuals.close()
         updater.close()
         pool.shutdown(wait=False, cancel_futures=True)
         lyrics_pool.shutdown(wait=False, cancel_futures=True)

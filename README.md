@@ -19,10 +19,10 @@ tlyrics
 ## Use
 
 - `s`: settings - Playback & lyrics, Appearance, Effects, Browser setup, Updates,
-  and Command aliases. Enter opens a category; Esc goes back. Ctrl+S saves all
+  Command aliases, and Visualizer. Enter opens a category; Esc goes back. Ctrl+S saves all
   changes. Esc from the category list discards changes; aliases apply immediately.
 - `[` / `]`: adjust this song by 0.05s (saved). `0`: reset this song. `r`: retry. `q`: quit.
-- `tlyrics --settings`: open settings directly.
+- `v`: toggle the visualizer. `tlyrics --settings`: open settings directly.
 - `tlyrics --list`: list players. `tlyrics --player spotify`: select one.
 - `tlyrics --lrc song.lrc`: use LRC, enhanced word-timed LRC, or `.lyricsfile.yaml`.
 
@@ -67,9 +67,34 @@ Renderer benchmark: `python3 tests/benchmark_render.py` (synthetic, excludes ter
 
 Tests (with PyYAML installed): `python3 -m unittest discover -s tests -v`.
 
+## Appearance and visualizer
+
+Appearance includes minimal, neon, retro and soft presets, extra accent colours,
+borders, backgrounds, title styles, progress styles and controls to hide headings,
+playback details or keyboard hints. Presets preview in settings; Ctrl+S saves.
+Layout details and visualizer controls have their own submenus.
+
+The optional visualizer uses [CAVA](https://github.com/karlstav/cava) for audio
+analysis and Python for drawing. Install `cava` with your distro's package manager
+if it is missing, then press `v` or enable it in Settings / Visualizer.
+It is off by default and captures system **output**, not your microphone. Other
+apps playing through that output are included. Audio is never saved or uploaded.
+Your existing CAVA configuration is not changed.
+
+Layouts: bars, mirror, outline, waterfall, radial and horizontal levels. These
+show frequency-band energy, not a raw waveform. Choose top/bottom placement,
+height, width, bands, mono/stereo, sensitivity, smoothing, peak caps, decay,
+noise reduction, frame rate, palettes, gradients, glyphs and spacing.
+**Audio & response** selects PulseAudio or PipeWire. PulseAudio also offers output
+monitors via `pactl`; PipeWire follows the default output. Automatic sensitivity
+can be disabled to use the manual sensitivity setting. A missing backend shows
+an error without stopping lyrics; toggle off/on to retry after fixing it.
+The panel and audio capture pause in terminals shorter than 18 rows. Unicode glyphs need a suitable
+font; choose ASCII bars if needed. Gradients fall back to the theme on basic terminals.
+
 ## Updates
 
-Version: 1.0.2. `tlyrics --version` shows your installed version.
+Version: 1.1.0. `tlyrics --version` shows your installed version.
 By default, the app checks GitHub daily and asks before installing a new release.
 Choose **auto**, **ask** or **off** in settings, with a 6-hour, daily or weekly
 check interval. Press `u` or choose **Check for updates now** for a manual check.
