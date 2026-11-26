@@ -51,7 +51,7 @@ def alias_content():
 
 def add_alias(name):
     if not re.fullmatch(r'[a-zA-Z][a-zA-Z0-9_-]{0,31}', name) or name == 'tlyrics':
-        raise ValueError('Use 1–32 letters, digits, underscores or hyphens; start with a letter.')
+        raise ValueError('Use 1-32 letters, digits, underscores or hyphens; start with a letter.')
     path = BIN / name
     if path.exists() or path.is_symlink() or shutil.which(name):
         raise ValueError('That command already exists. Choose another name.')

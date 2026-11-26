@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Terminal Lyrics — synced lyrics for desktop and browser music players."""
+"""Terminal Lyrics - synced lyrics for desktop and browser music players."""
 import argparse
 import bisect
 import concurrent.futures
@@ -508,7 +508,7 @@ def main():
             tracks = players.read()
             if args.list:
                 for t in tracks:
-                    print(clean(f'{t.player}: {t.status} — {t.artist} — {t.title}'))
+                    print(clean(f'{t.player}: {t.status} - {t.artist} - {t.title}'))
                 if not tracks:
                     print('No MPRIS players detected.')
             else:

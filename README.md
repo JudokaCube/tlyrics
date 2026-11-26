@@ -1,4 +1,4 @@
-# tlyrics — Terminal Lyrics
+# tlyrics - Terminal Lyrics
 
 Synced lyrics in your Linux terminal. Follows the song, pauses and seeks.
 
@@ -16,7 +16,7 @@ tlyrics
 
 ## Use
 
-- `s`: settings — player, theme, layout, spacing, timing, cache and command aliases.
+- `s`: settings - player, theme, layout, spacing, timing, cache and command aliases.
 - `[` / `]`: adjust lyric timing. `0`: reset. `r`: retry. `q`: quit.
 - `tlyrics --settings`: open settings directly.
 - `tlyrics --list`: list players. `tlyrics --player spotify`: select one.
