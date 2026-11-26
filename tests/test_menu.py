@@ -2,12 +2,32 @@
 import copy
 import curses
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 import settings
 import tlyrics
+import lyrics
+import rendering
 
 
 class MenuTests(unittest.TestCase):
+    def test_word_sync_menu_save_reaches_live_renderer_and_survives_reload(self):
+        screen = MagicMock()
+        screen.getmaxyx.return_value = (24, 100)
+        with tempfile.TemporaryDirectory() as folder, patch.object(settings, 'CONFIG', Path(folder) / 'settings.json'), \
+             patch('curses.has_colors', return_value=False), patch.object(tlyrics, 'apply_theme', return_value=0):
+            config = settings.load()
+            doc = lyrics.parse_lrc('[00:01]<00:01>one <00:02>two<00:03>')
+            for enabled in (False, True):
+                screen.getch.side_effect = [10, curses.KEY_DOWN, 10, 19]
+                with patch.object(tlyrics, 'choose', return_value=enabled):
+                    tlyrics.menu(screen, config, [])
+                self.assertEqual(config['word_sync'], enabled)
+                self.assertEqual(settings.load()['word_sync'], enabled)
+                glyphs = rendering.glyphs(doc, 0, 2.5, config)
+                self.assertEqual(''.join(c for c, _, active in glyphs if active), 'two' if enabled else '')
+
     def run_menu(self, keys, choice=None, size=(24, 100), save_error=None):
         config = copy.deepcopy(settings.DEFAULTS)
         screen = MagicMock()

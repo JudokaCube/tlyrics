@@ -73,6 +73,31 @@ class ClockTests(unittest.TestCase):
 
 
 class WordTests(unittest.TestCase):
+    def test_sync_status_reflects_current_line_and_preference(self):
+        doc = lyrics.parse_lrc('[00:01]<00:01>one <00:02>two\n[00:03]line only')
+        self.assertEqual(doc.sync_mode(1.5, True), 'Word sync')
+        self.assertIn('timestamps unavailable', doc.sync_mode(3.5, True))
+        self.assertIn('word sync off', doc.sync_mode(1.5, False))
+
+    def test_unquoted_yaml_words_remain_text_and_render_as_words(self):
+        raw = """version: '1.0'
+lines:
+- text: oh no
+  start_ms: 1000
+  end_ms: 3000
+  words:
+  - text: 'oh '
+    start_ms: 1000
+  - text: no
+    start_ms: 2000
+"""
+        doc = lyrics.from_record({'lyricsfile': raw, 'syncedLyrics': '[00:01]oh no'})
+        self.assertTrue(doc.has_words)
+        self.assertEqual(doc.warning, '')
+        with patch('curses.has_colors', return_value=False):
+            glyphs = rendering.glyphs(doc, 0, 2.1, settings.DEFAULTS)
+        self.assertEqual(''.join(c for c, _, active in glyphs if active), 'no')
+
     def test_enhanced_lrc_offset_repeated_lines_and_end(self):
         doc = lyrics.parse_lrc('[offset:100]\n[00:01.00][00:04.00]<00:01.00>Hello <00:01.50>world<00:02.00>')
         self.assertEqual([line.text for line in doc.lines], ['Hello world', 'Hello world'])
@@ -132,6 +157,29 @@ class WordTests(unittest.TestCase):
 
 
 class RenderTests(unittest.TestCase):
+    def test_centered_autoscroll_keeps_first_middle_and_last_line_in_middle(self):
+        from unittest.mock import MagicMock
+        doc = lyrics.parse_lrc('\n'.join(f'[00:{i:02d}]line {i}' for i in range(20)))
+        screen = MagicMock()
+        screen.getmaxyx.return_value = (30, 100)
+        for layout in settings.CHOICES['layout']:
+            for top, bottom in [(8, 27), (8, 20), (15, 27)]:
+                for index in (0, 10, 19):
+                    with patch('curses.has_colors', return_value=False), patch.object(rendering, 'put_row') as put:
+                        rendering.draw(screen, doc, index + .1, dict(settings.DEFAULTS, layout=layout), top, bottom)
+                    active = [call.args[1] for call in put.call_args_list if ''.join(g[0] for g in call.args[2]).startswith('> ')]
+                    self.assertEqual(active, [top + (bottom - top) // 2])
+                    self.assertTrue(all(top <= call.args[1] < bottom for call in put.call_args_list))
+
+    def test_centering_can_be_disabled(self):
+        from unittest.mock import MagicMock
+        doc = lyrics.parse_lrc('[00:01]first\n[00:02]last')
+        screen = MagicMock()
+        screen.getmaxyx.return_value = (30, 100)
+        with patch('curses.has_colors', return_value=False), patch.object(rendering, 'put_row') as put:
+            rendering.draw(screen, doc, 1.5, dict(settings.DEFAULTS, center_active=False))
+        self.assertEqual(put.call_args_list[0].args[1], 8)
+
     def test_wide_characters_and_combining_marks_wrap(self):
         text = 'hello 世界 e\u0301 example'
         glyphs = [(c, 0, False) for c in text]

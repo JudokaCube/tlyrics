@@ -40,6 +40,13 @@ class Document:
     def index(self, position):
         return bisect.bisect_right(self.starts, position) - 1
 
+    def sync_mode(self, position, enabled):
+        if not enabled:
+            return 'Line sync (word sync off)'
+        index = self.index(position)
+        available = bool(self.lines[index].words) if index >= 0 and self.active(index, position) else self.has_words
+        return 'Word sync' if available else 'Line sync (word timestamps unavailable)'
+
     def line_end(self, index):
         line = self.lines[index]
         if line.end is not None:
@@ -119,7 +126,14 @@ def yaml_document(text):
                 key = self.construct_object(key_node, deep=deep)
                 if not isinstance(key, str) or key in result:
                     raise ValueError('Duplicate or invalid Lyricsfile key')
-                result[key] = self.construct_object(value_node, deep=deep)
+                # YAML 1.1 interprets unquoted lyric words such as "no" as False.
+                # Text fields are literal text; retain the original scalar spelling.
+                if key == 'text' and isinstance(value_node, yaml.ScalarNode) and value_node.tag in (
+                        'tag:yaml.org,2002:str', 'tag:yaml.org,2002:bool',
+                        'tag:yaml.org,2002:int', 'tag:yaml.org,2002:float'):
+                    result[key] = value_node.value
+                else:
+                    result[key] = self.construct_object(value_node, deep=deep)
             return result
 
     return yaml.load(text, Loader=UniqueLoader)

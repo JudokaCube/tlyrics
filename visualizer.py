@@ -94,14 +94,18 @@ class Spectrum:
         dt = 1 / self.config['viz_fps'] if self.last is None else max(0, min(1, now - self.last))
         self.last = now
         peak = float(values.max())
-        self.reference = max(.001, peak, self.reference * math.exp(-dt * .6))
+        # A single transient must not rescale every bar in one frame.
+        response = .12 if peak > self.reference else 2.5
+        self.reference += (max(.01, peak) - self.reference) * (1 - math.exp(-dt / response))
         gain = (.85 / self.reference) if self.config['viz_autosens'] else self.config['viz_sensitivity'] / 100
         noise = self.config['viz_noise']
         gate = 10 ** ((-90 + noise * .35) / 20)
         floor = -60 + noise * .2
         db = 20 * np.log10(np.maximum(values * gain, 1e-12))
         levels = np.clip((db - floor) / -floor, 0, 1)
-        levels[values < gate] = 0
+        # Fade through the noise floor instead of switching a boosted band
+        # abruptly between zero and a tall bar near the gate threshold.
+        levels *= np.clip((values - gate) / (gate * 3), 0, 1)
         return tuple(float(v) for v in levels)
 
 
@@ -116,6 +120,7 @@ class Visualizer:
         self.message = ''
         self.levels = []
         self.peaks = []
+        self.peak_until = []
         self.history = deque(maxlen=20)
         self.last_frame = 0.0
         self.last_history = 0.0
@@ -127,6 +132,8 @@ class Visualizer:
         self.close()
         self.signature = signature
         self.levels, self.peaks = [], []
+        self.peak_until = []
+        self.last_frame = self.last_history = 0.0
         self.history.clear()
         with self.lock:
             self.latest, self.stamp, self.message = (), 0.0, ''
@@ -170,7 +177,8 @@ class Visualizer:
                     now = time.monotonic()
                     if now >= next_analysis and decoder.generation != analyzed and len(decoder.window) == FFT_SIZE * PCM_FRAME_BYTES:
                         frame = analyzer.analyze(decoder.window, now)
-                        next_analysis = now + 1 / config['viz_fps']
+                        period = 1 / config['viz_fps']
+                        next_analysis += max(1, math.floor((now - next_analysis) / period) + 1) * period
                         analyzed = decoder.generation
                         with self.lock:
                             self.latest, self.stamp, self.message = frame, now, ''
@@ -211,12 +219,18 @@ class Visualizer:
         if len(self.levels) != len(target):
             self.levels = [0.0] * len(target)
             self.peaks = [0.0] * len(target)
-        response = {'fast': .025, 'balanced': .08, 'soft': .18}[config['viz_smoothing']]
+        if len(self.peak_until) != len(target):
+            self.peak_until = [0.0] * len(target)
+        attack, release = {'fast': (.035, .14), 'balanced': (.09, .28), 'soft': (.18, .45)}[config['viz_smoothing']]
         fall = {'fast': 4.0, 'balanced': 1.8, 'slow': .7}[config['viz_decay']]
-        weight = 1 - math.exp(-dt / response)
         for i, value in enumerate(target):
+            weight = 1 - math.exp(-dt / (attack if value > self.levels[i] else release))
             self.levels[i] += (value - self.levels[i]) * weight
-            self.peaks[i] = max(self.levels[i], self.peaks[i] - fall * dt)
+            if self.levels[i] >= self.peaks[i]:
+                self.peaks[i] = self.levels[i]
+                self.peak_until[i] = now + .18
+            elif now > self.peak_until[i]:
+                self.peaks[i] = max(self.levels[i], self.peaks[i] - fall * min(dt, now - self.peak_until[i]))
         if now - self.last_history >= 1 / config['viz_fps']:
             self.history.append(tuple(self.levels))
             self.last_history = now
@@ -291,9 +305,10 @@ def grid(levels, peaks, history, width, height, config):
                     for row in range(height - amount, height):
                         cell(row, x + dx, (height - row) / height)
                     if config['viz_peaks'] and peaks:
-                        peak = peaks[min(len(peaks) - 1, i * len(peaks) // count)]
-                        if peak > .015:
-                            cell(max(0, height - math.ceil(peak * height)), x + dx, 1)
+                        peak = max(peaks[i * len(peaks) // count:(i + 1) * len(peaks) // count])
+                        peak_amount = min(height, math.ceil(peak * height))
+                        if peak > .015 and peak_amount > amount:
+                            cell(height - peak_amount, x + dx, peak_amount / height)
     return cells
 
 
@@ -310,14 +325,14 @@ def fractional_caps(levels, peaks, columns, height, config):
         units = value * height
         whole = math.floor(units)
         fraction = units - whole
-        if value > .015 and fraction > .001:
+        if value > .015 and fraction > 0:
             row = height - whole - 1
             char = '▁▂▃▄▅▆▇█'[min(7, max(0, math.ceil(fraction * 8) - 1))]
             for dx in range(span):
                 glyphs[row, start + dx] = char
         if config['viz_peaks'] and peaks:
-            peak = peaks[min(len(peaks) - 1, i * len(peaks) // count)]
-            if peak - value > .5 / height:
+            peak = max(peaks[i * len(peaks) // count:(i + 1) * len(peaks) // count])
+            if peak > .015 and math.ceil(peak * height) > math.ceil(value * height):
                 row = max(0, height - math.ceil(peak * height))
                 for dx in range(span):
                     glyphs[row, start + dx] = '▔'

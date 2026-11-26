@@ -348,7 +348,8 @@ def choose(screen, title, values, current):
 SETTINGS_GROUPS = {
     'Playback & lyrics': [('player', 'Music player'), ('word_sync', 'Word sync'),
                           ('offset', 'Global timing offset'), ('offset_step', 'Song adjustment step'),
-                          ('interval', 'Playback refresh (seconds)'), ('cache', 'Cache lyrics')],
+                          ('interval', 'Playback refresh (seconds)'), ('cache', 'Cache lyrics'),
+                          ('center_active', 'Keep playing line centered')],
     'Appearance': [('theme', 'Theme'), ('layout', 'Layout'), ('align', 'Alignment'),
                    ('spacing', 'Line spacing'), ('max_width', 'Lyrics width (0 = full)'),
                    ('progress', 'Progress bar'), ('timestamps', 'Lyric timestamps')],
@@ -418,6 +419,8 @@ def menu(screen, config, tracks):
                 put(screen, 3 + row, display, curses.A_REVERSE if row + start == index else 0)
             if category == 'Command aliases':
                 hint = 'Alias changes apply immediately. ' + (', '.join(draft['aliases']) or 'No aliases.')
+            elif category == 'Playback & lyrics' and rows[index][0] == 'word_sync':
+                hint = 'Highlights supplied word timestamps; line-only lyrics cannot track words.'
             elif draft != config:
                 hint = 'Unsaved changes - Ctrl+S saves all categories.'
             else:
@@ -668,13 +671,13 @@ def ui(screen, players, args, config):
                 room = max(1, (lyric_bottom - lyric_top) // config['spacing'])
                 if doc.lines and position is not None:
                     lyric_time = position + offset
-                    mode = ('Word sync' if doc.has_words else 'Line sync (word timestamps unavailable)') if config['word_sync'] else 'Line sync'
+                    mode = doc.sync_mode(lyric_time, config['word_sync'])
                     if current.resolution >= 0.5:
                         mode += ' | coarse player timing'
                     elif playback.cadence >= 0.5:
                         mode += ' | interpolating player clock'
-                    if config['show_status'] or doc.warning:
-                        put(screen, 7, doc.warning or mode, curses.A_DIM, True)
+                    if config['show_status'] or doc.warning or (config['word_sync'] and mode.startswith('Line sync')):
+                        put(screen, 7, mode + (' | ' + doc.warning if doc.warning else ''), curses.A_DIM, True)
                     rendering.draw(screen, doc, lyric_time, config, top=lyric_top, bottom=lyric_bottom)
                 elif future:
                     put(screen, (lyric_top + lyric_bottom) // 2, 'Finding lyrics…', centered=True)

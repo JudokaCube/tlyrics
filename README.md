@@ -41,6 +41,8 @@ Word sync needs actual word timestamps. Songs without them stay line-synced, eve
 with word sync enabled. Timing also depends on the recording and lyric source.
 Positive timing offsets show lyrics earlier. Settings include a global offset and
 saved per-song adjustments. Optional PyGObject enables immediate MPRIS seek/pause signals.
+**Playback & lyrics / Keep playing line centered** keeps the current line in the
+middle, including at the start and end of a song. Turn it off for compact scrolling.
 
 ## Appearance and visualizer
 

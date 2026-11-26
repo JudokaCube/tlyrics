@@ -15,6 +15,31 @@ import visualizer
 
 
 class VisualizerTests(unittest.TestCase):
+    def test_peak_caps_never_recolour_the_body_and_reduce_with_bands(self):
+        cfg = dict(settings.DEFAULTS, viz_peaks=True)
+        body = visualizer.grid([.5], [.5], [], 1, 4, cfg)
+        self.assertEqual(body, visualizer.grid([.5], [.5], [], 1, 4, dict(cfg, viz_peaks=False)))
+        # Narrow terminals combine the peak of every represented band.
+        cells = visualizer.grid([.2, .2], [.2, 1], [], 1, 4, cfg)
+        self.assertIn((0, 0), cells)
+        self.assertEqual(visualizer.fractional_caps([.2, .2], [.2, 1], 1, 4, cfg)[0, 0], '▔')
+
+    def test_peak_hold_and_release_suppress_alternating_frame_jitter(self):
+        engine = visualizer.Visualizer()
+        engine.latest, engine.stamp = (1.0,), 100
+        engine.levels, engine.peaks = [1.0], [1.0]
+        engine.last_frame = 100
+        engine.frame(settings.DEFAULTS, 100.01)
+        engine.latest = (0.0,)
+        engine.frame(settings.DEFAULTS, 100.1)
+        self.assertEqual(engine.peaks, [1.0])
+        values = []
+        for i in range(120):
+            now = 101 + i / 30
+            engine.latest, engine.stamp = ((.4 if i % 2 else .6),), now
+            values.append(engine.frame(settings.DEFAULTS, now)[0])
+        self.assertLess(max(values[-60:]) - min(values[-60:]), .05)
+
     def test_cancelled_worker_does_not_use_replacement_stop_event(self):
         engine = visualizer.Visualizer()
         original_stop = threading.Event()
@@ -189,6 +214,16 @@ class AppearanceTests(unittest.TestCase):
 
 
 class NativeSpectrumTests(unittest.TestCase):
+    def test_noise_threshold_has_no_abrupt_jump(self):
+        cfg = dict(settings.DEFAULTS, viz_channels='mono')
+        analyzer = visualizer.Spectrum(cfg)
+        analyzer.reference = .01
+        gate = 10 ** ((-90 + cfg['viz_noise'] * .35) / 20)
+        peaks = [max(analyzer.analyze(self.tone(1000, gate * (0.5 + i / 100)), 100 + i / 30))
+                 for i in range(150)]
+        self.assertGreater(max(peaks), .05)
+        self.assertLess(max(abs(a - b) for a, b in zip(peaks, peaks[1:])), .025)
+
     @staticmethod
     def tone(frequency, amplitude=.5, stereo=False, opposite=False):
         import numpy as np
@@ -229,3 +264,6 @@ class NativeSpectrumTests(unittest.TestCase):
         self.assertTrue(caps)
         self.assertIn('▇', caps.values())
         self.assertTrue(all(0 <= y < 4 and 0 <= x < 5 for y, x in caps))
+        # Just crossing a whole row used to flash a full block for one frame.
+        caps = visualizer.fractional_caps([.25001], [.25001], 1, 4, config)
+        self.assertEqual(caps[2, 0], '▁')

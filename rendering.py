@@ -214,9 +214,16 @@ def draw(screen, doc, position, config, top=8, bottom=None):
                 word_target = len(rows)
             rows.append(row)
     target = target if word_target is None else word_target
-    start = max(0, min(target - rows_available // 2, len(rows) - rows_available))
-    visible = rows[start:start + rows_available]
-    y = top if config['layout'] == 'scroll' else max(top, top + (bottom - top - len(visible) * config['spacing']) // 2)
+    if config.get('center_active', True):
+        # Allow blank space at song boundaries instead of pulling the active
+        # line away from the middle to fill the panel.
+        start = target - rows_available // 2
+        visible = rows[max(0, start):max(0, start + rows_available)]
+        y = top + max(0, -start) * config['spacing']
+    else:
+        start = max(0, min(target - rows_available // 2, len(rows) - rows_available))
+        visible = rows[start:start + rows_available]
+        y = top if config['layout'] == 'scroll' else max(top, top + (bottom - top - len(visible) * config['spacing']) // 2)
     for row in visible:
         put_row(screen, y, row, config['align'] == 'center')
         y += config['spacing']
