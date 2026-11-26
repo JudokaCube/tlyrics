@@ -34,13 +34,28 @@ if binary.exists() or binary.is_symlink():
     if binary.is_symlink() or marker not in binary.read_text():
         raise SystemExit('An unrelated ~/.local/bin/tlyrics exists; move it before installing.')
 target.mkdir(parents=True, exist_ok=True)
-for name in ('tlyrics.py', 'settings.py', 'browser_bridge.py', 'browser.user.js', 'LICENSE'):
+import subprocess
+python = sys.executable
+try:
+    import yaml
+except ImportError:
+    environment = target / '.venv'
+    try:
+        subprocess.run([sys.executable, '-m', 'venv', '--system-site-packages', str(environment)], check=True)
+        python = str(environment / 'bin/python')
+        subprocess.run([python, '-m', 'pip', 'install', '--disable-pip-version-check', '-r',
+                        str(source / 'requirements.txt')], check=True)
+    except subprocess.CalledProcessError:
+        raise SystemExit('Could not install PyYAML. Install python-yaml (Arch), python3-yaml (Debian/Fedora),\n'
+                         'or enable Python venv/pip support and rerun install.sh.')
+for name in ('tlyrics.py', 'settings.py', 'browser_bridge.py', 'browser.user.js',
+             'lyrics.py', 'timing.py', 'rendering.py', 'requirements.txt', 'LICENSE'):
     src, dst = source / name, target / name
     if src.resolve() != dst.resolve():
         shutil.copy2(src, dst)
 binary.parent.mkdir(parents=True, exist_ok=True)
 temporary = binary.with_suffix('.tmp')
-temporary.write_text('#!/bin/sh\n' + marker + '\nexec ' + shlex.quote(sys.executable) + ' ' +
+temporary.write_text('#!/bin/sh\n' + marker + '\nexec ' + shlex.quote(python) + ' ' +
                      shlex.quote(str(target / 'tlyrics.py')) + ' "$@"\n')
 temporary.chmod(0o755)
 temporary.replace(binary)

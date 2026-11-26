@@ -11,9 +11,14 @@ def track(player='limusic', status='Playing', position=12):
 
 
 class LyricsTests(unittest.TestCase):
+    def setUp(self):
+        self.throttle = patch.multiple(app, NEXT_REQUEST=0.0, RETRY_UNTIL=0.0)
+        self.throttle.start()
+        self.addCleanup(self.throttle.stop)
+
     def test_multiple_timestamps_and_offset(self):
         self.assertEqual(app.parse_lrc('[ar:Artist]\n[offset:-500]\n[00:02.50][01:03]hello\n[00:05.0]'),
-                         [(2.0, 'hello'), (4.5, ''), (62.5, 'hello')])
+                         [(3.0, 'hello'), (5.5, ''), (63.5, 'hello')])
 
     def test_seek_back_and_before_first_line(self):
         lines = [(2, 'a'), (5, 'b'), (10, 'c')]
@@ -45,6 +50,33 @@ class LyricsTests(unittest.TestCase):
             with patch('urllib.request.urlopen', side_effect=error):
                 self.assertIn('No matching', app.get_lyrics(track())['message'])
                 self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_rate_limit_honours_retry_after(self):
+        error = urllib.error.HTTPError('url', 429, 'slow down', {'Retry-After': '30'}, None)
+        with patch('urllib.request.urlopen', side_effect=error) as request:
+            first = app.fetch_record({'track_name': 'Test', 'artist_name': 'Artist'})
+            second = app.fetch_record({'track_name': 'Test', 'artist_name': 'Artist'})
+        self.assertIn('rate limit', first['message'])
+        self.assertIn('rate limit', second['message'])
+        self.assertEqual(request.call_count, 1)
+
+    def test_old_cache_refreshed_for_words_and_kept_offline(self):
+        with TemporaryDirectory() as directory, patch.object(app, 'CACHE', Path(directory)):
+            old = {'syncedLyrics': '[00:01]cached'}
+            cache = Path(directory) / (app.settings.song_key(track()) + '.json')
+            cache.write_text(app.json.dumps(old))
+            with patch.object(app, 'fetch_record', return_value={'message': 'offline'}):
+                self.assertEqual(app.get_lyrics(track()), old)
+            with patch.object(app, 'fetch_record', return_value={'lyricsfile': 'version: "1.0"'}):
+                self.assertIn('lyricsfile', app.get_lyrics(track()))
+
+    def test_malformed_payload_not_cached(self):
+        with TemporaryDirectory() as directory, patch.object(app, 'CACHE', Path(directory)):
+            response = unittest.mock.MagicMock()
+            response.__enter__.return_value.read.return_value = b'{"error":"not lyrics"}'
+            with patch('urllib.request.urlopen', return_value=response):
+                self.assertIn('Invalid', app.get_lyrics(track())['message'])
+                self.assertFalse(list(Path(directory).iterdir()))
 
 
 if __name__ == '__main__':

@@ -32,6 +32,18 @@ def validate(data):
             raise ValueError('Invalid timing')
     if data.get('status') not in ('Playing', 'Paused', 'Stopped'):
         raise ValueError('Invalid status')
+    resolution = data.get('resolution', 1 if data['service'] == 'spotify-web' else 0.001)
+    if type(resolution) not in (int, float) or not math.isfinite(resolution) or not 0.001 <= resolution <= 1:
+        raise ValueError('Invalid timing resolution')
+    serial = data.get('seek_serial', 0)
+    if type(serial) is not int or not 0 <= serial <= 2**53:
+        raise ValueError('Invalid seek serial')
+    if 'sampled_at_ms' in data:
+        stamp = data['sampled_at_ms']
+        if type(stamp) not in (int, float) or not math.isfinite(stamp) or abs(time.time() - stamp / 1000) > 5:
+            raise ValueError('Expired browser sample')
+    if data['rate'] > 16 or data['duration'] > 604800 or data['position'] > 604800:
+        raise ValueError('Invalid playback bounds')
     return data
 
 
@@ -47,7 +59,8 @@ class Bridge:
                 pass
 
             def do_POST(self):
-                if self.path != '/playback' or not secrets.compare_digest(self.headers.get('X-Tlyrics-Token', ''), secret):
+                supplied = self.headers.get('X-Tlyrics-Token', '')
+                if self.path != '/playback' or not secrets.compare_digest(supplied.encode('utf-8'), secret.encode('utf-8')):
                     self.send_error(403)
                     return
                 try:
@@ -59,7 +72,13 @@ class Bridge:
                     with bridge.lock:
                         now = time.monotonic()
                         bridge.rows = {k: v for k, v in bridge.rows.items() if now - v[1] < 10}
-                        bridge.rows[data['session']] = (data, now)
+                        if len(bridge.rows) >= 32 and data['session'] not in bridge.rows:
+                            raise ValueError('Too many browser sessions')
+                        lag = max(0, time.time() - data.get('sampled_at_ms', time.time() * 1000) / 1000)
+                        sampled = now - lag
+                        previous = bridge.rows.get(data['session'])
+                        if previous is None or sampled >= previous[1]:
+                            bridge.rows[data['session']] = (data, sampled)
                 except (ValueError, OSError):
                     self.send_error(400)
                     return

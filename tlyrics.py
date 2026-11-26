@@ -4,11 +4,9 @@ import argparse
 import bisect
 import concurrent.futures
 import curses
-import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import sys
 import time
 import urllib.error
@@ -17,6 +15,12 @@ import urllib.request
 from dataclasses import dataclass, field
 import settings
 import browser_bridge
+import lyrics
+import rendering
+from timing import PlaybackClock
+import math
+import threading
+from email.utils import parsedate_to_datetime
 
 PREFIX = 'org.mpris.MediaPlayer2.'
 IFACE = PREFIX + 'Player'
@@ -25,15 +29,7 @@ CACHE = Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'tlyric
 
 
 def parse_lrc(text):
-    offset = re.search(r'\[offset:([+-]?\d+)\]', text, re.I)
-    shift = int(offset[1]) / 1000 if offset else 0
-    lines = []
-    for line in text.splitlines():
-        stamps = re.findall(r'\[(\d+):(\d+(?:\.\d+)?)\]', line)
-        words = re.sub(r'\[[^\]]*\]', '', line).strip()
-        for minutes, seconds in stamps:
-            lines.append((int(minutes) * 60 + float(seconds) + shift, words))
-    return sorted(lines, key=lambda item: item[0])
+    return [(line.start, line.text) for line in lyrics.parse_lrc(text).lines]
 
 
 def active_line(lines, position):
@@ -52,6 +48,9 @@ class Track:
     rate: float = 1.0
     sampled: float = field(default_factory=time.monotonic)
     service: str = ""
+    track_id: str = ""
+    resolution: float = 0.001
+    seek_serial: int = 0
 
     def seconds(self, now=None):
         if self.position is None:
@@ -72,8 +71,46 @@ class Players:
         except ImportError:
             raise RuntimeError('Install python-dbus (Arch) or python3-dbus (Debian/Ubuntu).')
         self.dbus = dbus
-        self.bus = dbus.SessionBus()
         self.bridge = None
+        self.changed = threading.Event()
+        self.seek_serials = {}
+        self.signal_loop = None
+        self.signal_matches = []
+        self.signal_thread = None
+        try:
+            from dbus.mainloop.glib import DBusGMainLoop
+            from gi.repository import GLib
+        except ImportError:
+            self.bus = dbus.SessionBus()
+        else:
+            self.bus = dbus.SessionBus(private=True, mainloop=DBusGMainLoop())
+            self.signal_matches.append(self.bus.add_signal_receiver(
+                self.on_seek, signal_name='Seeked', dbus_interface=IFACE, path=PATH, sender_keyword='sender'))
+            self.signal_matches.append(self.bus.add_signal_receiver(
+                lambda *args: self.changed.set(), signal_name='PropertiesChanged',
+                dbus_interface='org.freedesktop.DBus.Properties', path=PATH, arg0=IFACE))
+            self.signal_matches.append(self.bus.add_signal_receiver(
+                self.on_owner, signal_name='NameOwnerChanged', dbus_interface='org.freedesktop.DBus'))
+            self.signal_loop = GLib.MainLoop()
+            self.signal_thread = threading.Thread(target=self.signal_loop.run, daemon=True)
+            self.signal_thread.start()
+
+    def on_seek(self, position, sender=None):
+        self.seek_serials[sender] = self.seek_serials.get(sender, 0) + 1
+        self.changed.set()
+
+    def on_owner(self, name, old, new):
+        if str(name).startswith(PREFIX):
+            self.seek_serials.pop(str(old), None)
+            self.changed.set()
+
+    def close(self):
+        for match in self.signal_matches:
+            match.remove()
+        if self.signal_loop:
+            self.signal_loop.quit()
+        if self.signal_thread:
+            self.signal_thread.join(timeout=1)
 
     def read(self):
         tracks = []
@@ -87,25 +124,42 @@ class Players:
                 m = p.get('Metadata', {})
                 position = None
                 try:
+                    before = time.monotonic()
                     position = props.Get(IFACE, 'Position', timeout=0.5)
+                    measured = (before + time.monotonic()) / 2
                 except self.dbus.DBusException:
                     pass
-                sampled = time.monotonic()
+                sampled = measured if position is not None else time.monotonic()
                 url = str(m.get('xesam:url', ''))
                 service = classify(str(name), url)
+                duration = float(m.get('mpris:length', 0)) / 1e6
+                rate = float(p.get('Rate', 1))
+                if not math.isfinite(duration) or duration < 0 or not math.isfinite(rate) or not 0 <= rate <= 16:
+                    continue
+                if position is not None and (not math.isfinite(float(position)) or float(position) < 0):
+                    position = None
+                artists = m.get('xesam:artist', [])
+                if isinstance(artists, str):
+                    artists = [artists]
+                serial = 0
+                if getattr(self, 'signal_loop', None):
+                    serial = self.seek_serials.get(str(self.bus.get_name_owner(name)), 0)
                 tracks.append(Track(str(name)[len(PREFIX):], str(m.get('xesam:title', '')),
-                                    ', '.join(map(str, m.get('xesam:artist', []))),
-                                    str(m.get('xesam:album', '')), float(m.get('mpris:length', 0)) / 1e6,
+                                    ', '.join(map(str, artists)),
+                                    str(m.get('xesam:album', '')), duration,
                                     None if position is None else float(position) / 1e6,
-                                    str(p.get('PlaybackStatus', 'Stopped')), float(p.get('Rate', 1)), sampled, service))
-            except self.dbus.DBusException:
+                                    str(p.get('PlaybackStatus', 'Stopped')), rate, sampled, service,
+                                    str(m.get('mpris:trackid', '')), 0.001, serial))
+            except (self.dbus.DBusException, TypeError, ValueError, OverflowError):
                 continue
         bridge = self.bridge
         if bridge:
             for data, stamp in bridge.read():
                 tracks.append(Track(data['service'] + '.' + data['session'][:8], data['title'],
                                     data['artist'], data['album'], data['duration'], data['position'],
-                                    data['status'], data['rate'], stamp, data['service']))
+                                    data['status'], data['rate'], stamp, data['service'], data.get('track_id', ''),
+                                    data.get('resolution', 1.0 if data['service'] == 'spotify-web' else 0.001),
+                                    data.get('seek_serial', 0)))
         return tracks
 
 
@@ -132,18 +186,71 @@ def select_player(tracks, preferred=None, previous=None):
         tracks = [t for t in tracks if t.service in groups.get(preferred, (preferred,))
                   or preferred.lower() in t.player.lower()]
     return max(tracks, key=lambda t: (t.status == 'Playing', bool(t.title), bool(t.artist),
-                                     t.service.endswith('-web'), t.player == previous,
+                                     t.resolution < 0.5, t.player == previous, t.service.endswith('-web'),
                                      t.status == 'Paused'), default=None)
 
 
+REQUEST_LOCK = threading.Lock()
+NEXT_REQUEST = 0.0
+RETRY_UNTIL = 0.0
+
+
+def fetch_record(params):
+    global NEXT_REQUEST, RETRY_UNTIL
+    url = 'https://lrclib.net/api/get?' + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={'User-Agent': 'tlyrics/0.2 (https://github.com/JudokaCube/tlyrics)'})
+    with REQUEST_LOCK:
+        now = time.monotonic()
+        if now < RETRY_UNTIL:
+            return {'message': f'Lyrics service rate limit. Retry in {math.ceil(RETRY_UNTIL - now)} seconds.'}
+        if now < NEXT_REQUEST:
+            time.sleep(min(0.3, NEXT_REQUEST - now))
+        try:
+            with urllib.request.urlopen(req, timeout=6) as response:
+                payload = response.read(lyrics.MAX_BYTES + 1)
+                if len(payload) > lyrics.MAX_BYTES:
+                    return {'message': 'Lyrics response is too large.'}
+                data = json.loads(payload)
+        except urllib.error.HTTPError as exc:
+            try:
+                if exc.code == 404:
+                    return {'message': 'No matching lyrics found. Press r to retry, or use --lrc FILE.'}
+                if exc.code == 429:
+                    header = exc.headers.get('Retry-After', '60') if exc.headers else '60'
+                    try:
+                        delay = float(header)
+                        if not math.isfinite(delay):
+                            raise ValueError('Invalid retry interval')
+                    except ValueError:
+                        try:
+                            delay = parsedate_to_datetime(header).timestamp() - time.time()
+                        except (TypeError, ValueError, OverflowError):
+                            delay = 60
+                    RETRY_UNTIL = time.monotonic() + max(1, delay)
+                    return {'message': f'Lyrics service rate limit. Retry in {math.ceil(max(1, delay))} seconds.'}
+                return {'message': f'Lyrics service returned HTTP {exc.code}. Press r to retry.'}
+            finally:
+                exc.close()
+        except (OSError, ValueError) as exc:
+            return {'message': f'Lyrics unavailable: {exc}. Press r to retry.'}
+        finally:
+            NEXT_REQUEST = time.monotonic() + 0.25
+    if not valid_lyrics(data):
+        return {'message': 'Invalid lyrics response. Press r to retry.'}
+    return data
+
+
 def get_lyrics(track, refresh=False, cache_enabled=True):
-    digest = hashlib.sha256(json.dumps(track.key).encode()).hexdigest()
+    digest = settings.song_key(track)
     cache = CACHE / (digest + '.json')
+    cached = None
     if not refresh and cache_enabled:
         try:
             data = json.loads(cache.read_text())
             if valid_lyrics(data):
-                return data
+                cached = data
+                if (data.get('_tlyrics_checked_words') or 'lyricsfile' in data) and time.time() - cache.stat().st_mtime < 7 * 86400:
+                    return data
         except (OSError, ValueError):
             pass
     params = {'track_name': track.title, 'artist_name': track.artist}
@@ -151,19 +258,10 @@ def get_lyrics(track, refresh=False, cache_enabled=True):
         params['album_name'] = track.album
     if 1 <= track.duration <= 3600:
         params['duration'] = str(round(track.duration))
-    url = 'https://lrclib.net/api/get?' + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={'User-Agent': 'tlyrics/0.1 (Linux terminal lyrics)'})
-    try:
-        with urllib.request.urlopen(req, timeout=8) as response:
-            data = json.load(response)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return {'message': 'No matching lyrics found. Press r to retry, or use --lrc FILE.'}
-        return {'message': f'Lyrics service returned HTTP {exc.code}. Press r to retry.'}
-    except (OSError, ValueError) as exc:
-        return {'message': f'Lyrics unavailable: {exc}. Press r to retry.'}
-    if not valid_lyrics(data):
-        return {'message': 'Invalid lyrics response. Press r to retry.'}
+    data = fetch_record(params)
+    if data.get('message'):
+        return cached or data
+    data['_tlyrics_checked_words'] = True
     try:
         if not cache_enabled:
             return data
@@ -177,8 +275,15 @@ def get_lyrics(track, refresh=False, cache_enabled=True):
 
 
 def valid_lyrics(data):
-    return isinstance(data, dict) and all(data.get(key) is None or isinstance(data[key], str)
-                                         for key in ('syncedLyrics', 'plainLyrics'))
+    return (isinstance(data, dict)
+            and any(key in data for key in ('syncedLyrics', 'plainLyrics', 'lyricsfile', 'instrumental'))
+            and all(data.get(key) is None or isinstance(data[key], str)
+                    for key in ('syncedLyrics', 'plainLyrics', 'lyricsfile')))
+
+
+def load_lyrics(track, refresh=False, cache_enabled=True):
+    record = get_lyrics(track, refresh, cache_enabled)
+    return record, lyrics.from_record(record)
 
 
 def clean(text):
@@ -202,18 +307,7 @@ def clock(seconds):
 
 
 def apply_theme(config):
-    if not curses.has_colors():
-        return curses.A_BOLD
-    colors = dict(cyan=curses.COLOR_CYAN, green=curses.COLOR_GREEN, purple=curses.COLOR_MAGENTA,
-                  amber=curses.COLOR_YELLOW, white=curses.COLOR_WHITE)
-    curses.start_color()
-    try:
-        curses.use_default_colors()
-        background = -1
-    except curses.error:
-        background = curses.COLOR_BLACK
-    curses.init_pair(1, colors[config['theme']], background)
-    return curses.color_pair(1) | curses.A_BOLD
+    return rendering.configure(config)
 
 
 def prompt(screen, label):
@@ -225,7 +319,7 @@ def prompt(screen, label):
         put(screen, 6, 'Enter confirms · Esc cancels', curses.A_DIM)
         screen.refresh()
         key = screen.get_wch()
-        if key == '\x1b':
+        if key in ('\x1b', '\x03'):
             return None
         if key in ('\n', '\r'):
             return value.strip()
@@ -247,7 +341,7 @@ def choose(screen, title, values, current):
         put(screen, screen.getmaxyx()[0] - 2, '↑ / ↓ choose · Enter select · Esc back', curses.A_DIM)
         screen.refresh()
         key = screen.getch()
-        if key == 27:
+        if key in (27, 3):
             return current
         if key in (10, 13):
             return values[index]
@@ -258,10 +352,15 @@ def choose(screen, title, values, current):
 
 
 def menu(screen, config, tracks):
-    draft = dict(config, aliases=list(config['aliases']))
+    draft = dict(config, aliases=list(config['aliases']), song_offsets=dict(config['song_offsets']))
     rows = [('player', 'Player'), ('theme', 'Theme'), ('layout', 'Layout'), ('align', 'Alignment'),
             ('progress', 'Progress bar'), ('timestamps', 'Lyric timestamps'), ('spacing', 'Line spacing'),
-            ('offset', 'Timing offset (seconds)'), ('interval', 'Playback refresh (seconds)'),
+            ('offset', 'Global timing offset'), ('offset_step', 'Song adjustment step'),
+            ('interval', 'Playback refresh (seconds)'), ('fps', 'Animation frame rate'),
+            ('word_sync', 'Word sync'), ('word_style', 'Word highlight'), ('glow', 'Glow'),
+            ('gradient', 'Gradient target'), ('palette', 'Gradient colours'), ('pulse', 'Gentle pulse'),
+            ('animate_gradient', 'Animate gradient'), ('dim_inactive', 'Dim inactive lyrics'),
+            ('underline_word', 'Underline active word'), ('max_width', 'Lyrics width (0 = full)'),
             ('cache', 'Cache lyrics'), ('bridge', 'Browser bridge'), ('browser', 'Export browser setup script'),
             ('add', 'Add terminal alias'), ('remove', 'Remove terminal alias'), ('save', 'Save and return')]
     index = 0
@@ -284,7 +383,7 @@ def menu(screen, config, tracks):
             put(screen, h - 2, '↑ / ↓ move · Enter edit · Ctrl+S save · Esc cancel', curses.A_DIM)
             screen.refresh()
             pressed = screen.getch()
-            if pressed == 27:
+            if pressed in (27, 3):
                 return
             if pressed == curses.KEY_UP:
                 index = (index - 1) % len(rows)
@@ -335,7 +434,7 @@ def menu(screen, config, tracks):
                 except (ValueError, OSError) as exc:
                     message = str(exc)
     finally:
-        screen.timeout(80)
+        screen.timeout(max(1, round(1000 / config["fps"])))
         apply_theme(config)
 
 
@@ -345,26 +444,30 @@ def ui(screen, players, args, config):
         curses.curs_set(0)
     except curses.error:
         pass
-    screen.timeout(80)
+    screen.timeout(max(1, round(1000 / config["fps"])))
     accent = apply_theme(config)
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    lyrics_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+    lyrics_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     current = None
     key = None
     data = {}
-    lines = []
+    doc = lyrics.Document()
+    playback = PlaybackClock()
     future = None
     polling = None
     next_poll = 0
-    offset = config["offset"]
     scroll = 0
     error = ''
     bridge_error = ''
     available = []
-    local = {'syncedLyrics': Path(args.lrc).read_text()} if args.lrc else None
+    local = None
+    if args.lrc:
+        path = Path(args.lrc)
+        if path.stat().st_size > lyrics.MAX_BYTES:
+            raise ValueError('Lyrics file is too large')
+        local = {('lyricsfile' if path.suffix in ('.yaml', '.yml') else 'syncedLyrics'): path.read_text(encoding='utf-8-sig')}
     if args.settings:
         menu(screen, config, [])
-        offset = config['offset']
         accent = apply_theme(config)
     try:
         while True:
@@ -379,8 +482,12 @@ def ui(screen, players, args, config):
             elif not config['bridge'] and players.bridge:
                 players.bridge.close()
                 players.bridge = None
+            if players.changed.is_set():
+                next_poll = 0
+                players.changed.clear()
             if polling is None and now >= next_poll:
                 polling = pool.submit(players.read)
+                next_poll = now + config["interval"]
             if polling is not None and polling.done():
                 try:
                     available = polling.result()
@@ -391,26 +498,32 @@ def ui(screen, players, args, config):
                     current = None
                     error = str(exc)
                 polling = None
-                next_poll = now + config["interval"]
+            playback.poll_interval = config["interval"]
+            playback.update(current)
             new_key = current.key if current and current.title else None
             if new_key != key:
                 key = new_key
-                data, lines, scroll = {}, [], 0
+                data, doc, scroll = {}, lyrics.Document(), 0
                 if future:
                     future.cancel()
                 future = None
                 if key:
                     if local:
                         data = local
-                        lines = parse_lrc(data['syncedLyrics'])
+                        doc = lyrics.from_record(data)
                     else:
-                        future = lyrics_pool.submit(get_lyrics, current, False, config["cache"])
+                        future = lyrics_pool.submit(load_lyrics, current, False, config["cache"])
             if future and future.done():
                 try:
-                    data = future.result()
+                    result, parsed = future.result()
                 except Exception as exc:
-                    data = {'message': f'Lyrics unavailable: {exc}'}
-                lines = parse_lrc(data.get('syncedLyrics') or '')
+                    result = {'message': f'Lyrics unavailable: {exc}'}
+                    parsed = lyrics.Document()
+                if result.get('message') and (doc.lines or doc.plain):
+                    doc.warning = result['message']
+                else:
+                    data = result
+                    doc = parsed
                 future = None
             screen.erase()
             h, w = screen.getmaxyx()
@@ -420,33 +533,32 @@ def ui(screen, players, args, config):
             if current and current.title:
                 put(screen, 2, current.title, curses.A_BOLD, True)
                 put(screen, 3, current.artist, curses.A_DIM, True)
-                position = current.seconds()
+                position = playback.seconds()
+                song_offset = config['song_offsets'].get(settings.song_key(current), 0.0)
+                offset = config['offset'] + song_offset
                 stamp = clock(position) if position is not None else '--:--'
-                put(screen, 5, f'{current.player} · {current.status} · {stamp} / {clock(current.duration)} · offset {offset:+.1f}s', centered=True)
+                put(screen, 5, f'{current.player} · {current.status} · {stamp} / {clock(current.duration)} · offset {offset:+.2f}s', centered=True)
                 if config["progress"] and position is not None and current.duration:
                     length = max(1, w - 6)
                     filled = min(length, max(0, int(length * position / current.duration)))
                     put(screen, 6, '━' * filled + '─' * (length - filled), accent)
                 room = max(1, (h - 11) // config["spacing"])
-                if lines and position is not None:
-                    index = active_line(lines, position + offset)
-                    count = 1 if config['layout'] == 'focus' else min(3, room) if config['layout'] == 'compact' else room
-                    start = max(0, index - count // 2)
-                    for row, (timestamp, words) in enumerate(lines[start:start + count]):
-                        selected = start + row == index
-                        prefix = (clock(timestamp) + '  ') if config['timestamps'] else ''
-                        y = 8 + row * config['spacing'] if config['layout'] == 'scroll' else max(8, h // 2 - count // 2 + row)
-                        put(screen, y, ('› ' if selected else '  ') + prefix + (words or '♪'),
-                            accent if selected else curses.A_DIM, config['align'] == 'center')
+                if doc.lines and position is not None:
+                    lyric_time = position + offset
+                    mode = 'Word sync' if config['word_sync'] and doc.has_words else 'Line sync'
+                    if current.resolution >= 0.5:
+                        mode += ' | coarse player timing'
+                    put(screen, 7, doc.warning or mode, curses.A_DIM, True)
+                    rendering.draw(screen, doc, lyric_time, config)
                 elif future:
                     put(screen, h // 2, 'Finding lyrics…', centered=True)
                 else:
-                    plain = data.get('plainLyrics') or ''
-                    message = data.get('message') or ('Instrumental ♪' if data.get('instrumental') else
-                              'Player does not report position; sync unavailable.' if lines else
+                    plain = doc.plain or data.get('plainLyrics') or ''
+                    message = data.get('message') or doc.warning or ('Instrumental ♪' if data.get('instrumental') else
+                              'Player does not report position; sync unavailable.' if doc.lines else
                               'Only unsynced lyrics available. Use ↑ / ↓ to scroll.' if plain else 'No lyrics available.')
                     put(screen, 7, message, curses.A_DIM, True)
-                    display = [words for _, words in lines] if lines else plain.splitlines()
+                    display = [line.text for line in doc.lines] if doc.lines else plain.splitlines()
                     scroll = min(scroll, max(0, len(display) - room))
                     for row, words in enumerate(display[scroll:scroll + room]):
                         put(screen, 8 + row * config['spacing'], words, centered=config['align'] == 'center')
@@ -458,23 +570,28 @@ def ui(screen, players, args, config):
             if pressed in (ord('q'), 27, 3):
                 break
             if pressed == ord('s'):
-                config['offset'] = offset
                 menu(screen, config, available)
-                offset = config['offset']
                 accent = apply_theme(config)
                 next_poll = 0
-            if pressed == ord('['):
-                offset = max(-60, round(offset - 0.2, 1))
-            elif pressed == ord(']'):
-                offset = min(60, round(offset + 0.2, 1))
-            elif pressed == ord('0'):
-                offset = 0
+            if current and pressed in (ord('['), ord(']'), ord('0')):
+                song = settings.song_key(current)
+                adjustment = config['song_offsets'].get(song, 0.0)
+                adjustment = 0 if pressed == ord('0') else max(-60, min(60, round(
+                    adjustment + (config['offset_step'] if pressed == ord(']') else -config['offset_step']), 3)))
+                if adjustment:
+                    config['song_offsets'][song] = adjustment
+                else:
+                    config['song_offsets'].pop(song, None)
+                try:
+                    settings.save(config)
+                except OSError as exc:
+                    bridge_error = f'Could not save song timing: {exc}'
             elif pressed == curses.KEY_DOWN:
                 scroll += 1
             elif pressed == curses.KEY_UP:
                 scroll = max(0, scroll - 1)
             elif pressed == ord('r') and current and not future and not local:
-                future = lyrics_pool.submit(get_lyrics, current, True, config["cache"])
+                future = lyrics_pool.submit(load_lyrics, current, True, config["cache"])
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
         lyrics_pool.shutdown(wait=False, cancel_futures=True)
@@ -488,7 +605,7 @@ def main():
     parser.add_argument('--list', action='store_true', help='List detected players')
     parser.add_argument('--status', action='store_true', help='Print selected player and song as JSON')
     parser.add_argument('--offset', type=float, default=None, help='Lyric timing adjustment in seconds; positive shows lyrics earlier')
-    parser.add_argument('--lrc', help='Use a local timed .lrc file instead of fetching lyrics')
+    parser.add_argument('--lrc', help='Use a local LRC, enhanced LRC, or .lyricsfile.yaml file')
     parser.add_argument('--settings', action='store_true', help='Open interactive settings')
     parser.add_argument('--browser-script', action='store_true', help='Export your private browser userscript')
     args = parser.parse_args()
@@ -496,7 +613,7 @@ def main():
     if args.player:
         config['player'] = args.player
     if args.offset is not None:
-        if not __import__('math').isfinite(args.offset) or abs(args.offset) > 60:
+        if not math.isfinite(args.offset) or abs(args.offset) > 60:
             parser.error('--offset must be between -60 and 60 seconds')
         config['offset'] = args.offset
     try:
@@ -523,6 +640,9 @@ def main():
     except Exception as exc:
         print(f'tlyrics: {exc}', file=sys.stderr)
         return 1
+    finally:
+        if 'players' in locals():
+            players.close()
     return 0
 
 

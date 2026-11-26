@@ -6,20 +6,30 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import copy
+import hashlib
 
 CONFIG = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'tlyrics' / 'settings.json'
 BIN = Path.home() / '.local/bin'
 DEFAULTS = dict(player='auto', theme='cyan', layout='scroll', align='center',
                 progress=True, timestamps=False, spacing=1, offset=0.0,
-                interval=0.2, cache=True, aliases=[], bridge=False)
+                interval=0.1, cache=True, aliases=[], bridge=False,
+                word_sync=True, word_style='whole', glow='off', gradient='off', palette='ocean',
+                pulse=False, animate_gradient=False, dim_inactive=True, underline_word=True,
+                max_width=100, fps=30, offset_step=0.05, song_offsets={})
 CHOICES = dict(theme=['cyan', 'green', 'purple', 'amber', 'white'],
                layout=['scroll', 'focus', 'compact'], align=['center', 'left'],
                progress=[True, False], timestamps=[False, True], spacing=[1, 2],
-               interval=[0.1, 0.2, 0.5, 1.0], cache=[True, False], bridge=[False, True])
+               interval=[0.05, 0.1, 0.2, 0.5, 1.0], cache=[True, False], bridge=[False, True],
+               word_sync=[True, False], word_style=['whole', 'sweep'], glow=['off', 'soft', 'bright'],
+               gradient=['off', 'word', 'line'], palette=['ocean', 'sunset', 'aurora', 'rainbow'],
+               pulse=[False, True], animate_gradient=[False, True], dim_inactive=[True, False],
+               underline_word=[True, False], max_width=[60, 80, 100, 0], fps=[15, 30, 60],
+               offset_step=[0.05, 0.1, 0.2])
 
 
 def load():
-    result = DEFAULTS.copy()
+    result = copy.deepcopy(DEFAULTS)
     try:
         data = json.loads(CONFIG.read_text())
         if not isinstance(data, dict):
@@ -32,10 +42,17 @@ def load():
             elif key == 'offset' and type(value) in (int, float) and math.isfinite(value) and abs(value) <= 60:
                 result[key] = value
             elif key == 'aliases' and isinstance(value, list):
-                result[key] = [s for s in value if isinstance(s, str) and re.fullmatch(r'[a-zA-Z][a-zA-Z0-9_-]{0,31}', s)]
+                result[key] = list(dict.fromkeys(s for s in value if isinstance(s, str) and re.fullmatch(r'[a-zA-Z][a-zA-Z0-9_-]{0,31}', s)))
+            elif key == 'song_offsets' and isinstance(value, dict):
+                result[key] = {k: v for k, v in value.items() if isinstance(k, str) and re.fullmatch(r'[0-9a-f]{64}', k)
+                               and type(v) in (int, float) and math.isfinite(v) and abs(v) <= 60}
     except (OSError, ValueError):
         pass
     return result
+
+
+def song_key(track):
+    return hashlib.sha256(json.dumps(track.key).encode()).hexdigest()
 
 
 def save(config):
