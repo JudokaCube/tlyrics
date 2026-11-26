@@ -17,6 +17,8 @@ import settings
 import browser_bridge
 import lyrics
 import rendering
+import players as player_catalog
+import updates
 from timing import PlaybackClock
 import math
 import threading
@@ -122,6 +124,9 @@ class Players:
                 props = self.dbus.Interface(obj, 'org.freedesktop.DBus.Properties')
                 p = props.GetAll(IFACE, timeout=0.5)
                 m = p.get('Metadata', {})
+                service = classify(str(name), str(m.get('xesam:url', '')))
+                if service is None:
+                    continue
                 position = None
                 try:
                     before = time.monotonic()
@@ -130,8 +135,6 @@ class Players:
                 except self.dbus.DBusException:
                     pass
                 sampled = measured if position is not None else time.monotonic()
-                url = str(m.get('xesam:url', ''))
-                service = classify(str(name), url)
                 duration = float(m.get('mpris:length', 0)) / 1e6
                 rate = float(p.get('Rate', 1))
                 if not math.isfinite(duration) or duration < 0 or not math.isfinite(rate) or not 0 <= rate <= 16:
@@ -164,25 +167,15 @@ class Players:
 
 
 def classify(name, url=''):
-    name = name.lower()
-    if 'open.spotify.com' in url:
-        return 'spotify-web'
-    if 'music.youtube.com' in url:
-        return 'youtube-music-web'
-    if 'spotify' in name:
-        return 'spotify'
-    if any(part in name for part in ('pear', 'youtube', 'ytmusic')):
-        return 'youtube-music'
-    if any(part in name for part in ('firefox', 'chrom', 'brave', 'vivaldi', 'edge', 'zen')):
-        return 'browser'
-    return name.removeprefix(PREFIX.lower())
+    return player_catalog.classify(name, url)
 
 
 def select_player(tracks, preferred=None, previous=None):
+    tracks = [t for t in tracks if player_catalog.accepted(t)]
     if preferred and preferred != 'auto':
         groups = {'spotify': ('spotify', 'spotify-web'),
                   'youtube-music': ('youtube-music', 'youtube-music-web'),
-                  'browser': ('browser', 'spotify-web', 'youtube-music-web')}
+                  'browser': tuple(set(player_catalog.WEB_SERVICES.values()))}
         tracks = [t for t in tracks if t.service in groups.get(preferred, (preferred,))
                   or preferred.lower() in t.player.lower()]
     return max(tracks, key=lambda t: (t.status == 'Playing', bool(t.title), bool(t.artist),
@@ -198,7 +191,7 @@ RETRY_UNTIL = 0.0
 def fetch_record(params):
     global NEXT_REQUEST, RETRY_UNTIL
     url = 'https://lrclib.net/api/get?' + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={'User-Agent': 'tlyrics/0.2 (https://github.com/JudokaCube/tlyrics)'})
+    req = urllib.request.Request(url, headers={'User-Agent': f'tlyrics/{updates.VERSION} (https://github.com/JudokaCube/tlyrics)'})
     with REQUEST_LOCK:
         now = time.monotonic()
         if now < RETRY_UNTIL:
@@ -362,7 +355,8 @@ def menu(screen, config, tracks):
             ('animate_gradient', 'Animate gradient'), ('dim_inactive', 'Dim inactive lyrics'),
             ('underline_word', 'Underline active word'), ('max_width', 'Lyrics width (0 = full)'),
             ('cache', 'Cache lyrics'), ('bridge', 'Browser bridge'), ('browser', 'Export browser setup script'),
-            ('add', 'Add terminal alias'), ('remove', 'Remove terminal alias'), ('save', 'Save and return')]
+            ('update_mode', 'Updates: ask / auto / off'), ('update_hours', 'Check interval (hours)'),
+            ('check_updates', 'Check for updates now'), ('add', 'Add terminal alias'), ('remove', 'Remove terminal alias'), ('save', 'Save and return')]
     index = 0
     message = 'Changes save with Save / Ctrl+S. Alias changes apply immediately.'
     screen.timeout(-1)
@@ -371,7 +365,7 @@ def menu(screen, config, tracks):
             accent = apply_theme(draft)
             screen.erase()
             h, w = screen.getmaxyx()
-            put(screen, 1, 'Terminal Lyrics · Settings', accent)
+            put(screen, 1, f'Terminal Lyrics {updates.VERSION} · Settings', accent)
             room = max(1, h - 7)
             start = max(0, index - room + 1)
             for row, (key, label) in enumerate(rows[start:start + room]):
@@ -392,6 +386,8 @@ def menu(screen, config, tracks):
             elif pressed in (10, 13, 19):
                 key = 'save' if pressed == 19 else rows[index][0]
                 try:
+                    if key == 'check_updates':
+                        return 'check_updates'
                     if key == 'save':
                         settings.save(draft)
                         config.update(draft)
@@ -399,7 +395,7 @@ def menu(screen, config, tracks):
                     if key == 'player':
                         values = list(dict.fromkeys(['auto', 'spotify', 'youtube-music', 'browser', 'spotify-web',
                                                      'youtube-music-web', 'limusic', draft['player']] + [t.player for t in tracks]))
-                        draft[key] = choose(screen, 'Player (browser fallback: choose browser)', values, draft[key])
+                        draft[key] = choose(screen, 'Supported music player', values, draft[key])
                     elif key in settings.CHOICES:
                         draft[key] = choose(screen, rows[index][1], settings.CHOICES[key], draft[key])
                     elif key == 'offset':
@@ -448,6 +444,7 @@ def ui(screen, players, args, config):
     accent = apply_theme(config)
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     lyrics_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    updater = updates.Manager()
     current = None
     key = None
     data = {}
@@ -467,10 +464,28 @@ def ui(screen, players, args, config):
             raise ValueError('Lyrics file is too large')
         local = {('lyricsfile' if path.suffix in ('.yaml', '.yml') else 'syncedLyrics'): path.read_text(encoding='utf-8-sig')}
     if args.settings:
-        menu(screen, config, [])
+        if menu(screen, config, []) == 'check_updates':
+            updater.check(config, manual=True)
         accent = apply_theme(config)
     try:
         while True:
+            restart = updater.poll()
+            if restart:
+                return restart
+            if updater.pending:
+                release, updater.pending = updater.pending, None
+                screen.timeout(-1)
+                try:
+                    approved = config['update_mode'] == 'auto' and not updater.manual
+                    if not approved:
+                        approved = choose(screen, f'Install tlyrics {release.version}? Restarts after updating.', ['No', 'Yes'], 'No') == 'Yes'
+                    if approved:
+                        updater.install(release)
+                    else:
+                        updater.message = f'Update {release.version} skipped. Press u to check again.'
+                finally:
+                    screen.timeout(max(1, round(1000 / config['fps'])))
+            updater.check(config)
             now = time.monotonic()
             if config['bridge'] and players.bridge is None:
                 try:
@@ -527,7 +542,9 @@ def ui(screen, players, args, config):
                 future = None
             screen.erase()
             h, w = screen.getmaxyx()
-            put(screen, 0, 'tlyrics', accent)
+            put(screen, 0, f'tlyrics {updates.VERSION}', accent)
+            if updater.message:
+                put(screen, 1, updater.message, curses.A_DIM)
             if bridge_error:
                 put(screen, 1, bridge_error)
             if current and current.title:
@@ -563,16 +580,19 @@ def ui(screen, players, args, config):
                     for row, words in enumerate(display[scroll:scroll + room]):
                         put(screen, 8 + row * config['spacing'], words, centered=config['align'] == 'center')
             else:
-                put(screen, h // 2, error or 'Waiting for a song… Start an MPRIS-enabled music player.', centered=True)
-            put(screen, h - 2, 'q quit   s settings   [ / ] timing   0 reset   r retry   ↑ / ↓ scroll', curses.A_DIM, True)
+                put(screen, h // 2, error or 'Waiting for a supported music player...', centered=True)
+            put(screen, h - 2, 'q quit   u updates   s settings   [ / ] timing   0 reset   r retry   ↑ / ↓ scroll', curses.A_DIM, True)
             screen.refresh()
             pressed = screen.getch()
             if pressed in (ord('q'), 27, 3):
                 break
             if pressed == ord('s'):
-                menu(screen, config, available)
+                if menu(screen, config, available) == 'check_updates':
+                    updater.check(config, manual=True)
                 accent = apply_theme(config)
                 next_poll = 0
+            if pressed == ord('u'):
+                updater.check(config, manual=True)
             if current and pressed in (ord('['), ord(']'), ord('0')):
                 song = settings.song_key(current)
                 adjustment = config['song_offsets'].get(song, 0.0)
@@ -593,6 +613,7 @@ def ui(screen, players, args, config):
             elif pressed == ord('r') and current and not future and not local:
                 future = lyrics_pool.submit(load_lyrics, current, True, config["cache"])
     finally:
+        updater.close()
         pool.shutdown(wait=False, cancel_futures=True)
         lyrics_pool.shutdown(wait=False, cancel_futures=True)
         if players.bridge:
@@ -608,7 +629,13 @@ def main():
     parser.add_argument('--lrc', help='Use a local LRC, enhanced LRC, or .lyricsfile.yaml file')
     parser.add_argument('--settings', action='store_true', help='Open interactive settings')
     parser.add_argument('--browser-script', action='store_true', help='Export your private browser userscript')
+    parser.add_argument('--version', action='version', version=f'tlyrics {updates.VERSION}')
+    parser.add_argument('--check-updates', action='store_true', help='Check for a new release')
+    parser.add_argument('--update', action='store_true', help='Check and offer to install an update')
+    parser.add_argument('--yes', action='store_true', help='Accept --update without prompting')
     args = parser.parse_args()
+    if args.yes and not args.update:
+        parser.error('--yes requires --update')
     config = settings.load()
     if args.player:
         config['player'] = args.player
@@ -616,7 +643,22 @@ def main():
         if not math.isfinite(args.offset) or abs(args.offset) > 60:
             parser.error('--offset must be between -60 and 60 seconds')
         config['offset'] = args.offset
+    restart = None
     try:
+        if args.check_updates or args.update:
+            release = updates.latest()
+            if not updates.newer(release):
+                print(f'tlyrics {updates.VERSION} is up to date' if release else 'No published releases yet')
+                return 0
+            print(f'tlyrics {release.version} is available (installed: {updates.VERSION})')
+            if args.update:
+                approved = args.yes
+                if not approved and sys.stdin.isatty():
+                    approved = input('Install update? [y/N] ').strip().lower() in ('y', 'yes')
+                if approved:
+                    updates.install_update(release)
+                    print(f'Installed tlyrics {release.version}')
+            return 0
         if args.browser_script:
             print(browser_bridge.export_script())
             return 0
@@ -627,14 +669,14 @@ def main():
                 for t in tracks:
                     print(clean(f'{t.player}: {t.status} - {t.artist} - {t.title}'))
                 if not tracks:
-                    print('No MPRIS players detected.')
+                    print('No supported music players detected.')
             else:
                 track = select_player(tracks, config["player"])
                 print(json.dumps(vars(track) if track else None, indent=2))
         else:
             if not sys.stdin.isatty() or not sys.stdout.isatty():
                 parser.error('Run in an interactive terminal, or use --status / --list.')
-            curses.wrapper(ui, players, args, config)
+            restart = curses.wrapper(ui, players, args, config)
     except KeyboardInterrupt:
         pass
     except Exception as exc:
@@ -643,6 +685,8 @@ def main():
     finally:
         if 'players' in locals():
             players.close()
+    if restart:
+        os.execv(str(restart), [str(restart), *sys.argv[1:]])
     return 0
 
 

@@ -16,7 +16,8 @@ DEFAULTS = dict(player='auto', theme='cyan', layout='scroll', align='center',
                 interval=0.1, cache=True, aliases=[], bridge=False,
                 word_sync=True, word_style='whole', glow='off', gradient='off', palette='ocean',
                 pulse=False, animate_gradient=False, dim_inactive=True, underline_word=True,
-                max_width=100, fps=30, offset_step=0.05, song_offsets={})
+                max_width=100, fps=30, offset_step=0.05, song_offsets={},
+                update_mode='ask', update_hours=24)
 CHOICES = dict(theme=['cyan', 'green', 'purple', 'amber', 'white'],
                layout=['scroll', 'focus', 'compact'], align=['center', 'left'],
                progress=[True, False], timestamps=[False, True], spacing=[1, 2],
@@ -25,7 +26,8 @@ CHOICES = dict(theme=['cyan', 'green', 'purple', 'amber', 'white'],
                gradient=['off', 'word', 'line'], palette=['ocean', 'sunset', 'aurora', 'rainbow'],
                pulse=[False, True], animate_gradient=[False, True], dim_inactive=[True, False],
                underline_word=[True, False], max_width=[60, 80, 100, 0], fps=[15, 30, 60],
-               offset_step=[0.05, 0.1, 0.2])
+               offset_step=[0.05, 0.1, 0.2], update_mode=['ask', 'auto', 'off'],
+               update_hours=[6, 24, 168])
 
 
 def load():

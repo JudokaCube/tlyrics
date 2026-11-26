@@ -6,7 +6,7 @@ Synced lyrics in your Linux terminal. Follows the song, pauses and seeks.
 
 Requires Python 3.10+ and Python D-Bus (`python-dbus` on Arch,
 `python3-dbus` on Debian/Ubuntu/Fedora).
-The installer adds PyYAML in a private environment if it isn't installed already.
+The installer adds PyYAML in a private environment.
 Debian/Ubuntu may also need `python3-venv`.
 
 ```sh
@@ -30,10 +30,12 @@ or sweep highlighting, word/line gradients, soft/bright glow, pulse, animation,
 width, and frame rate. Effects are optional; glow is simulated with colour and
 brightness. Gradients need a 256-colour terminal and fall back on simpler terminals.
 
-Spotify desktop, LiMusic, Pear Desktop and other MPRIS players work automatically.
-Enable MPRIS in your desktop player if needed. Spotify and YouTube Music websites
-can use your browser's media integration; select **browser** if the service name
-isn't exposed. Only the browser's active media session is visible through MPRIS.
+Spotify desktop, LiMusic, Pear Desktop, VLC, mpv and recognised music apps are
+supported through MPRIS. Enable MPRIS in your player if needed. Browser sessions
+must expose a music-site URL: Spotify, YouTube Music, Apple Music, SoundCloud,
+Tidal, Deezer, Amazon Music, Qobuz, Pandora or Bandcamp. WhatsApp, general video
+sites and unidentified browser sessions are ignored. If your browser doesn't
+expose the site URL, use the Spotify/YouTube Music bridge below.
 
 For direct web-player detection/timing, enable **Browser bridge** in settings and
 export the browser script. Install that generated `.user.js` file in a userscript
@@ -57,3 +59,21 @@ Settings: `~/.config/tlyrics`. Cache: `~/.cache/tlyrics` (XDG paths supported).
 Aliases are commands in `~/.local/bin`; existing commands are never overwritten.
 
 Tests (with PyYAML installed): `python3 -m unittest discover -s tests -v`.
+
+## Updates
+
+Version: 1.0.0. `tlyrics --version` shows your installed version.
+By default, the app checks GitHub daily and asks before installing a new release.
+Choose **auto**, **ask** or **off** in settings, with a 6-hour, daily or weekly
+check interval. Press `u` or choose **Check for updates now** for a manual check.
+Accepted updates install in the background and restart the app. Settings,
+aliases and cached lyrics stay intact. Failed checks do not interrupt playback.
+
+`tlyrics --check-updates` checks from the command line. `tlyrics --update`
+asks to install; add `--yes` to accept automatically. Run `sh install.sh` once
+to enable updates for older installations. Source checkouts are never overwritten.
+Packages are downloaded from this repository, checked against SHA256SUMS and
+validated before activation. Previous releases are kept in the installation folder.
+
+To publish: change `VERSION`, run the tests and `python3 build_release.py`, then
+attach both files in `dist/` to a GitHub release tagged `v<version>`.

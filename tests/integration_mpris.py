@@ -43,7 +43,7 @@ def serve():
             pass
 
     bus = dbus.SessionBus(mainloop=DBusGMainLoop())
-    name = dbus.service.BusName('org.mpris.MediaPlayer2.tlyrics_test', bus)
+    name = dbus.service.BusName('org.mpris.MediaPlayer2.spotify.tlyrics_test', bus)
     player = Player(bus)
     print('ready', flush=True)
     GLib.MainLoop().run()
@@ -61,7 +61,7 @@ def check():
         assert first.position == 10
         clock = PlaybackClock()
         clock.update(first)
-        remote = dbus.Interface(dbus.SessionBus().get_object('org.mpris.MediaPlayer2.tlyrics_test', tlyrics.PATH), 'test.Player')
+        remote = dbus.Interface(dbus.SessionBus().get_object('org.mpris.MediaPlayer2.spotify.tlyrics_test', tlyrics.PATH), 'test.Player')
         players.changed.clear()
         remote.Update(json.dumps(dict(position=10.2, status='Paused')))
         assert players.changed.wait(2), 'Seek signal did not trigger a refresh'

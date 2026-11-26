@@ -29,7 +29,7 @@ class TimingTests(unittest.TestCase):
 
     def test_service_groups(self):
         cases = [('spotify', '', 'spotify'), ('YoutubeMusic', '', 'youtube-music'),
-                 ('pear-desktop', '', 'youtube-music'), ('firefox', '', 'browser'),
+                 ('pear-desktop', '', 'youtube-music'), ('firefox', '', None),
                  ('chromium', 'https://open.spotify.com/track/abc', 'spotify-web'),
                  ('firefox', 'https://music.youtube.com/watch?v=abc', 'youtube-music-web')]
         for name, url, service in cases:
