@@ -17,6 +17,7 @@ class PlaybackClock:
         self.resolution = 0.001
         self.seek_serial = 0
         self.poll_interval = 0.1
+        self.cadence = 0.0
 
     def update(self, track):
         if track is None or track.position is None:
@@ -42,14 +43,20 @@ class PlaybackClock:
         if reset or self.status != 'Playing' or expected is None:
             # A rounded browser timestamp is uncertain within its one-second bin.
             self.position = raw + (resolution / 2 if resolution >= 0.5 and self.status == 'Playing' else 0)
+            self.cadence = 0.0
             self.anchor = self.moved = sample
             return
         delta = raw - previous_raw
+        if abs(delta) < 0.000001:
+            # Fresh Playing replies may repeat a cached MPRIS Position for seconds.
+            # They confirm liveness, not a new clock anchor or a seek.
+            return
+        movement_interval = sample - self.moved
         if delta < -0.04 or abs(raw - expected) > max(0.65, resolution * 1.5):
             self.position, self.anchor, self.moved = raw, sample, sample
             return  # Seek: do not slowly chase a discontinuity.
-        if abs(delta) < 0.000001:
-            return  # Repeated samples must not pull a running clock backwards.
+        if movement_interval > 0:
+            self.cadence = min(6.0, max(movement_interval, self.cadence * 0.8))
         self.moved = sample
         target = raw
         boundary = False
@@ -73,8 +80,10 @@ class PlaybackClock:
         now = time.monotonic() if now is None else now
         value = self.position
         if self.status == 'Playing':
-            # Stop extrapolating when a player stalls or the bridge stops reporting.
+            # Fresh status observations keep sparse MPRIS clocks running. A missing
+            # transport still freezes quickly; an unchanged live clock gets bounded
+            # grace for players such as LiMusic that publish Position every 2-3s.
             until = min(now, self.sampled + max(1.5, self.poll_interval * 2),
-                        self.moved + max(0.3, self.poll_interval * 2 + 0.15, self.resolution + 0.2))
+                        self.moved + max(4.0, self.cadence * 1.5 + self.poll_interval * 2))
             value += max(0.0, until - self.anchor) * self.rate
         return max(0.0, min(value, self.duration) if self.duration > 0 else value)

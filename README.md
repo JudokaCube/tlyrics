@@ -28,7 +28,8 @@ Word highlighting uses real word timestamps from LRCLIB or local files. Line-onl
 lyrics stay line-synced; word times are never guessed. Settings include whole-word
 or sweep highlighting, word/line gradients, soft/bright glow, pulse, animation,
 width, and frame rate. Effects are optional; glow is simulated with colour and
-brightness. Gradients need a 256-colour terminal and fall back on simpler terminals.
+brightness, without background blocks. Completed words stay readable; upcoming
+words are dimmed. Gradients need a 256-colour terminal and fall back on simpler terminals.
 
 Spotify desktop, LiMusic, Pear Desktop, VLC, mpv and recognised music apps are
 supported through MPRIS. Enable MPRIS in your player if needed. Browser sessions
@@ -49,7 +50,9 @@ Lyrics come from [LRCLIB](https://lrclib.net). Track metadata is sent there for
 lookup; lyrics are cached locally. Missing timed lyrics are shown without sync.
 The song clock follows playback seconds, independently of lyric line timestamps.
 The clock smooths measurement jitter, corrects seeks, and distinguishes precise
-media timestamps from whole-second browser labels. Sync still depends on the
+media timestamps from whole-second browser labels. Players such as LiMusic
+publish cached positions every few seconds; the clock continues between those
+updates while playback remains active. Sync still depends on the
 recording and lyric timestamps. Positive timing adjustments show lyrics earlier;
 use global offset for audio-device latency and song adjustments for individual tracks.
 With PyGObject installed (`python-gobject` on Arch, `python3-gi` on Debian/Ubuntu),
@@ -58,11 +61,13 @@ MPRIS pause/seek notifications also trigger immediate refreshes; polling works w
 Settings: `~/.config/tlyrics`. Cache: `~/.cache/tlyrics` (XDG paths supported).
 Aliases are commands in `~/.local/bin`; existing commands are never overwritten.
 
+Renderer benchmark: `python3 tests/benchmark_render.py` (synthetic, excludes terminal I/O).
+
 Tests (with PyYAML installed): `python3 -m unittest discover -s tests -v`.
 
 ## Updates
 
-Version: 1.0.0. `tlyrics --version` shows your installed version.
+Version: 1.0.1. `tlyrics --version` shows your installed version.
 By default, the app checks GitHub daily and asks before installing a new release.
 Choose **auto**, **ask** or **off** in settings, with a 6-hour, daily or weekly
 check interval. Press `u` or choose **Check for updates now** for a manual check.

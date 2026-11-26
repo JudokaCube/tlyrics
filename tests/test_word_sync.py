@@ -59,7 +59,7 @@ class ClockTests(unittest.TestCase):
     def test_stale_sample_freezes_and_missing_position_clears(self):
         clock = PlaybackClock()
         clock.update(observation(20, 100))
-        self.assertLessEqual(clock.seconds(110), 20.4)
+        self.assertLessEqual(clock.seconds(110), 21.5)
         clock.update(observation(None, 111))
         self.assertIsNone(clock.seconds(111))
 
@@ -156,3 +156,42 @@ class RenderTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class SparseClockTests(unittest.TestCase):
+    def test_limusic_cached_positions_keep_running_between_publications(self):
+        clock = PlaybackClock()
+        last_publication = 0.0
+        errors = []
+        for i in range(300):
+            elapsed = i / 10
+            if elapsed - last_publication >= (2 if int(last_publication) % 2 else 3):
+                last_publication = elapsed
+            clock.update(observation(20 + last_publication, 100 + elapsed))
+            errors.append(abs(clock.seconds(100 + elapsed) - (20 + elapsed)))
+        self.assertLess(max(errors), .001)
+
+    def test_sparse_clock_pause_and_seek_are_immediate(self):
+        clock = PlaybackClock()
+        clock.update(observation(20, 100))
+        clock.update(observation(20, 102))
+        self.assertAlmostEqual(clock.seconds(102), 22)
+        clock.update(observation(22, 102.1, status='Paused'))
+        self.assertAlmostEqual(clock.seconds(110), 22)
+        clock.update(observation(22, 110))
+        clock.update(observation(50, 110.1, seek_serial=1))
+        self.assertAlmostEqual(clock.seconds(110.1), 50)
+
+    def test_fresh_but_frozen_player_has_bounded_extrapolation(self):
+        clock = PlaybackClock()
+        for i in range(200):
+            clock.update(observation(20, 100 + i / 10))
+        self.assertLessEqual(clock.seconds(120), 24)
+
+class RenderPerformanceTests(unittest.TestCase):
+    def test_same_style_text_is_written_as_one_run(self):
+        from unittest.mock import MagicMock
+        screen = MagicMock()
+        screen.getmaxyx.return_value = (24, 100)
+        rendering.put_row(screen, 8, [(c, 0, False) for c in 'a complete lyric line'], True)
+        self.assertEqual(screen.addstr.call_count, 1)
+        self.assertEqual(screen.addstr.call_args.args[2], 'a complete lyric line')

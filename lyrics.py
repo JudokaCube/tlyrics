@@ -198,11 +198,14 @@ def from_record(record):
 def word_states(line, position, line_end):
     """Return (word, state, progress), preserving explicit gaps and overlaps."""
     result = []
+    ends = [line_end] * len(line.words)
+    following = line_end
+    for i in range(len(line.words) - 1, -1, -1):
+        if i + 1 < len(line.words) and line.words[i + 1].start > line.words[i].start:
+            following = line.words[i + 1].start
+        ends[i] = min(line_end, line.words[i].end if line.words[i].end is not None else following)
     for i, word in enumerate(line.words):
-        end = word.end
-        if end is None:
-            following = next((w.start for w in line.words[i + 1:] if w.start > word.start), line_end)
-            end = following
+        end = ends[i]
         if position < word.start:
             state, progress = 'future', 0.0
         elif position >= end:

@@ -469,6 +469,7 @@ def ui(screen, players, args, config):
         accent = apply_theme(config)
     try:
         while True:
+            frame_started = time.monotonic()
             restart = updater.poll()
             if restart:
                 return restart
@@ -565,6 +566,8 @@ def ui(screen, players, args, config):
                     mode = 'Word sync' if config['word_sync'] and doc.has_words else 'Line sync'
                     if current.resolution >= 0.5:
                         mode += ' | coarse player timing'
+                    elif playback.cadence >= 0.5:
+                        mode += ' | interpolating player clock'
                     put(screen, 7, doc.warning or mode, curses.A_DIM, True)
                     rendering.draw(screen, doc, lyric_time, config)
                 elif future:
@@ -583,6 +586,9 @@ def ui(screen, players, args, config):
                 put(screen, h // 2, error or 'Waiting for a supported music player...', centered=True)
             put(screen, h - 2, 'q quit   u updates   s settings   [ / ] timing   0 reset   r retry   ↑ / ↓ scroll', curses.A_DIM, True)
             screen.refresh()
+            # Drawing time is part of the frame budget, not an extra delay.
+            remaining = 1 / config['fps'] - (time.monotonic() - frame_started)
+            screen.timeout(max(0, math.ceil(remaining * 1000)))
             pressed = screen.getch()
             if pressed in (ord('q'), 27, 3):
                 break

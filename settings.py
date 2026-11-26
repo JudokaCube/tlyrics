@@ -15,7 +15,7 @@ DEFAULTS = dict(player='auto', theme='cyan', layout='scroll', align='center',
                 progress=True, timestamps=False, spacing=1, offset=0.0,
                 interval=0.1, cache=True, aliases=[], bridge=False,
                 word_sync=True, word_style='whole', glow='off', gradient='off', palette='ocean',
-                pulse=False, animate_gradient=False, dim_inactive=True, underline_word=True,
+                pulse=False, animate_gradient=False, dim_inactive=True, underline_word=False,
                 max_width=100, fps=30, offset_step=0.05, song_offsets={},
                 update_mode='ask', update_hours=24)
 CHOICES = dict(theme=['cyan', 'green', 'purple', 'amber', 'white'],

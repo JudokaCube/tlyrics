@@ -2,22 +2,25 @@
 import curses
 import math
 import unicodedata
+from functools import lru_cache
 from lyrics import word_states
 
 PALETTES = {
-    'ocean': [33, 39, 45, 51, 50, 49, 48, 47],
+    'ocean': [31, 38, 45, 81, 117, 153, 159, 195],
     'sunset': [196, 202, 208, 214, 220, 213, 207, 201],
     'aurora': [57, 63, 69, 75, 81, 87, 86, 85],
     'rainbow': [196, 208, 226, 46, 51, 33, 93, 201],
 }
 
 
+@lru_cache(maxsize=4096)
 def width(char):
     if unicodedata.combining(char):
         return 0
     return 2 if unicodedata.east_asian_width(char) in ('W', 'F') else 1
 
 
+@lru_cache(maxsize=2048)
 def safe_text(text):
     return ''.join(char for char in text if char.isprintable())
 
@@ -37,23 +40,31 @@ def configure(config):
     if curses.COLORS >= 256 and curses.COLOR_PAIRS >= 50:
         for index, color in enumerate(PALETTES[config['palette']]):
             curses.init_pair(16 + index, color, background)
-            curses.init_pair(32 + index, color, 235 if config['glow'] == 'soft' else 238)
-        curses.init_pair(48, colors[config['theme']], 235 if config['glow'] == 'soft' else 238)
+            # Lift all RGB channels together to preserve the palette's hue.
+            cube = color - 16
+            lift = 2 if config['glow'] == 'bright' else 1
+            red, green, blue = cube // 36, (cube // 6) % 6, cube % 6
+            lifted = 16 + 36 * min(5, red + lift) + 6 * min(5, green + lift) + min(5, blue + lift)
+            curses.init_pair(32 + index, lifted, background)
+        curses.init_pair(48, 255 if config['glow'] == 'bright' else 252, background)
     return curses.color_pair(1) | curses.A_BOLD
 
 
 def effect_attr(config, progress, position, glowing=True):
     color = curses.color_pair(1) if curses.has_colors() else 0
     rich = curses.has_colors() and curses.COLORS >= 256 and curses.COLOR_PAIRS >= 50
-    bold = not config['pulse'] or math.sin(position * math.pi * 2) > -0.6
+    bold = True
     if rich:
         phase = position * 0.15 if config['animate_gradient'] else 0
-        index = min(7, int(((progress + phase) % 1.000001) * 8))
+        blend = (0.5 - 0.5 * math.cos((progress + phase) * math.pi * 2)) if config['animate_gradient'] else progress
+        index = min(7, max(0, int(blend * 7)))
         glow = glowing and config['glow'] != 'off'
         if config['gradient'] != 'off':
             color = curses.color_pair((32 if glow else 16) + index)
         elif glow:
             color = curses.color_pair(48)
+    if config['pulse'] and rich and math.sin(position * math.pi * 0.7) < -0.75:
+        bold = False
     return color | (curses.A_BOLD if bold else 0)
 
 
@@ -73,14 +84,22 @@ def glyphs(doc, index, position, config):
         segments = [(line.text or '♪', 'active' if active else 'future', 0)]
     total = max(1, sum(len(safe_text(text)) for text, _, _ in segments) - 1)
     cursor = 0
+    attributes = {}
+    def highlight(progress, glowing=True):
+        # Quantise once per palette step, rather than calling curses per character.
+        bucket = round(progress * 64)
+        key = (bucket, glowing)
+        if key not in attributes:
+            attributes[key] = effect_attr(config, bucket / 64, position, glowing)
+        return attributes[key]
     for text, state, word_progress in segments:
         text = safe_text(text)
         for letter, char in enumerate(text):
             highlighted = state == 'active'
             progress = letter / max(1, len(text) - 1) if config['gradient'] == 'word' else cursor / total
-            attr = effect_attr(config, progress, position) if highlighted else dim
-            if active and config['gradient'] == 'line' and not highlighted:
-                attr = (effect_attr(config, progress, position, glowing=False) & ~curses.A_BOLD) | dim
+            attr = highlight(progress) if highlighted else (curses.A_NORMAL if active and state == 'past' else dim)
+            if active and config['gradient'] == 'line' and not highlighted and state == 'past':
+                attr = (highlight(progress, glowing=False) & ~curses.A_BOLD) | dim
             if timed and highlighted:
                 if config['underline_word']:
                     attr |= curses.A_UNDERLINE
@@ -124,15 +143,30 @@ def put_row(screen, y, row, centered):
             clusters[-1][0] += char
         else:
             clusters.append([char, attr])
+    runs = []
     for char, attr in clusters:
         size = sum(width(c) for c in char)
         if x + size >= columns:
             break
+        if runs and runs[-1][2] == attr:
+            runs[-1][1] += char
+        else:
+            runs.append([x, char, attr])
+        x += size
+    for x, text, attr in runs:
         try:
-            screen.addstr(y, x, char, attr)
+            screen.addstr(y, x, text, attr)
         except curses.error:
             pass
-        x += size
+
+
+@lru_cache(maxsize=512)
+def inactive_rows(text, start, timestamps, dim, columns):
+    prefix = '  '
+    if timestamps:
+        prefix += f'{max(0, int(start)) // 60}:{max(0, int(start)) % 60:02d}  '
+    glyph_list = [(c, dim, False) for c in prefix + safe_text(text or '♪')]
+    return tuple(tuple(row) for row in wrap(glyph_list, columns))
 
 
 def draw(screen, doc, position, config, top=8):
@@ -150,8 +184,14 @@ def draw(screen, doc, position, config, top=8):
     for line_index in range(lo, hi):
         if line_index == index:
             target = len(rows)
-        for row in wrap(glyphs(doc, line_index, position, config), columns):
-            if word_target is None and any(glyph[2] for glyph in row):
+        if doc.active(line_index, position):
+            line_rows = wrap(glyphs(doc, line_index, position, config), columns)
+        else:
+            line = doc.lines[line_index]
+            line_rows = inactive_rows(line.text, line.start, config['timestamps'],
+                                      curses.A_DIM if config['dim_inactive'] else curses.A_NORMAL, columns)
+        for row in line_rows:
+            if len(line_rows) > rows_available and word_target is None and any(glyph[2] for glyph in row):
                 word_target = len(rows)
             rows.append(row)
     target = target if word_target is None else word_target
