@@ -568,7 +568,7 @@ def menu(screen, config, tracks):
                         draft[key] = choose(screen, 'Output monitor (PipeWire uses the default output)', values, draft[key])
                     elif key == 'player':
                         values = list(dict.fromkeys(['auto', 'spotify', 'youtube-music', 'browser', 'spotify-web',
-                                                     'youtube-music-web', 'limusic', draft['player']] + [t.player for t in tracks]))
+                                                     'youtube-music-web', 'limusic', 'tmusic', draft['player']] + [t.player for t in tracks]))
                         draft[key] = choose(screen, 'Supported music player', values, draft[key])
                     elif key in settings.CHOICES:
                         draft[key] = choose(screen, rows[index][1], settings.CHOICES[key], draft[key])

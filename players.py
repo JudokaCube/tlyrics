@@ -20,6 +20,7 @@ DESKTOP = {
     'spotify': ('spotify',),
     'youtube-music': ('pear-desktop', 'pear_desktop', 'peardesktop', 'youtubemusic', 'youtube-music', 'ytmusic'),
     'limusic': ('limusic',),
+    'tmusic': ('tmusic',),
     'apple-music': ('cider', 'applemusic', 'apple-music'),
     'tidal': ('tidal', 'tidal-hifi', 'tidal_hifi'),
     'deezer': ('deezer',),

@@ -125,3 +125,7 @@ are excluded. Export requires a new filename. Review the report before sharing i
 
 Player clock correction is automatic. Vocal offset calibration still needs your
 taps: player timestamps alone cannot tell when a sung word actually begins.
+
+### tmusic
+
+[tmusic](https://github.com/JudokaCube/tmusic) is supported through MPRIS. Enable MPRIS in tmusic, then select tmusic in tlyrics settings or run `tlyrics --player tmusic`. The apps work independently.
