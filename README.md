@@ -18,11 +18,13 @@ tlyrics
 ## Controls
 
 - `s`: settings. Enter opens options; Esc goes back and saves when leaving settings.
+  `q` or Ctrl+C discards pending settings and returns to playback.
 - `Ctrl+S`: save and return. **Discard and return** cancels pending edits.
 - `v`: toggle the visualizer. `q` or Esc from playback: quit.
 - `[` / `]`: adjust this song's timing. `0`: reset. `r`: retry lyrics.
 - `u`: check for updates. Arrow keys scroll untimed lyrics.
-- `c`: calibrate sync. Tap Space as each displayed line starts; use left/right to
+- `c`: guided sync calibration. Read the instructions, then press Enter when ready.
+  A target at least five seconds ahead is selected automatically. Tap Space as each displayed line starts; use left/right to
   choose a line. After at least three distinct taps, Enter reviews the adjustment
   before saving it for this song. Backspace resets taps; Esc cancels.
 - `l`: lyric sources. Check timestamp availability, choose another LRCLIB version,
@@ -65,7 +67,8 @@ Press `p` anywhere in settings for an animated appearance preview. Up/down selec
 an option, left/right changes it, and Esc returns. The preview uses sample lyrics
 and simulated audio; save or discard changes through the settings menu.
 **Visualizer / Apply visualizer preset** offers subtle, smooth and energetic
-styles. Presets preserve the selected audio backend/device and enabled state.
+styles with animated previews. Use left/right to browse, Enter to apply, or Esc
+to cancel. Preview audio is simulated. Presets preserve the selected audio backend/device and enabled state.
 
 **No CAVA required.** tlyrics performs its own FFT spectrum analysis using NumPy.
 Audio comes from your system output through `parec` (PulseAudio) or `pw-record`
@@ -119,3 +122,6 @@ tlyrics --export-report ~/Downloads/tlyrics-report.json
 Reports contain versions, display/playback preferences, and error types with code
 locations. Lyrics, song history, browser tokens, local paths and exception messages
 are excluded. Export requires a new filename. Review the report before sharing it.
+
+Player clock correction is automatic. Vocal offset calibration still needs your
+taps: player timestamps alone cannot tell when a sung word actually begins.

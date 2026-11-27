@@ -19,6 +19,15 @@ class CalibrationTests(unittest.TestCase):
     def setUp(self):
         self.doc = lyrics.parse_lrc('[00:10]one\n[00:20]two\n[00:30]three\n[00:40]four')
 
+    def test_preparation_leaves_reading_time_and_handles_song_end(self):
+        calibration = experience.Calibration(self.doc, 0, 0)
+        calibration.ready = False
+        self.assertTrue(calibration.prepare(8, 0))
+        self.assertEqual(calibration.lines[calibration.index].start, 20)
+        calibration.ready = False
+        self.assertFalse(calibration.prepare(39, 0))
+        self.assertFalse(calibration.ready)
+
     def test_taps_produce_correct_per_song_offset_with_global_adjustment(self):
         calibration = experience.Calibration(self.doc, 5, 0)
         for position in (10.8, 20.9, 30.85):
@@ -196,7 +205,7 @@ class PlaybackFlowsTests(unittest.TestCase):
         screen = MagicMock()
         screen.getmaxyx.return_value = (14, 40)
         screen.position = 0
-        keys = iter([(ord('c'), 0), (ord(' '), 10.8), (ord(' '), 20.9),
+        keys = iter([(ord('c'), 0), (10, 0), (ord(' '), 10.8), (ord(' '), 20.9),
                      (ord(' '), 30.85), (10, 31), (ord('q'), 31)])
         def key():
             result, screen.position = next(keys)

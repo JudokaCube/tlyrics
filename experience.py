@@ -18,6 +18,16 @@ class Calibration:
             raise ValueError('Calibration needs timed lyrics.')
         self.index = min(len(self.lines) - 1, bisect.bisect_left([line.start for line in self.lines], position + offset + 1))
         self.samples = {}
+        self.ready = True
+
+    def prepare(self, position, offset):
+        # Leave time to read the target before vocals begin.
+        index = bisect.bisect_left([line.start for line in self.lines], position + offset + 5)
+        if index == len(self.lines):
+            return False
+        self.index = index
+        self.ready = True
+        return True
 
     def move(self, delta):
         self.index = max(0, min(len(self.lines) - 1, self.index + delta))

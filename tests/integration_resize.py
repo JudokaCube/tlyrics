@@ -57,6 +57,8 @@ def run(native):
     tlyrics.menu(screen,config,[])
     os.write(1,b'STAGE_PREVIEW')
     tlyrics.appearance_preview(screen,config)
+    os.write(1,b'STAGE_PRESETS')
+    tlyrics.visualizer_preset_preview(screen,config)
     os.write(1,b'STAGE_PLAYBACK')
     with tempfile.TemporaryDirectory() as folder, patch.object(visualizer,'Visualizer',Visualizer):
         path=Path(folder)/'test.lrc'
@@ -87,7 +89,7 @@ def wait_for(marker):
 
 try:
     for stage, finish in [('PROMPT', b'abc\r'), ('CHOOSE', b'\x1bOB\r'),
-                          ('MENU', b'\x1b'), ('PREVIEW', b'\x1b'), ('PLAYBACK', b'q')]:
+                          ('MENU', b'\x1b'), ('PREVIEW', b'\x1b'), ('PRESETS', b'\x1b'), ('PLAYBACK', b'q')]:
         wait_for(('STAGE_' + stage).encode())
         for height, width in [(18, 37), (5, 10), (14, 24), (24, 81), (40, 143), (30, 100)]:
             fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack('HHHH', height, width, 0, 0))
@@ -96,7 +98,7 @@ try:
         os.write(master, finish)
     wait_for(b'RESIZE_OK')
     assert process.wait(timeout=2) == 0
-    print('Real terminal resize passed: prompt, chooser, settings, preview and playback; 30 size changes.')
+    print('Real terminal resize passed: prompt, chooser, settings, preview, presets and playback; 36 size changes.')
 finally:
     if process.poll() is None:
         process.terminate()

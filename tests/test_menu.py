@@ -39,6 +39,24 @@ class MenuTests(unittest.TestCase):
             result = tlyrics.menu(screen, config, [])
         return config, screen, save, chooser, result, theme
 
+    def test_q_discards_from_nested_settings(self):
+        config, _, save, _, _, _ = self.run_menu(
+            [curses.KEY_DOWN, 10, 10, ord('q')], lambda *args: 'green')
+        self.assertEqual(config, settings.DEFAULTS)
+        save.assert_not_called()
+
+    def test_preset_preview_cancel_preserves_settings_and_never_captures(self):
+        draft = copy.deepcopy(settings.DEFAULTS)
+        screen = MagicMock()
+        screen.getmaxyx.return_value = (24, 80)
+        screen.getch.side_effect = [curses.KEY_RIGHT, curses.KEY_RESIZE, 27]
+        with patch('curses.has_colors', return_value=False), patch.object(tlyrics.visualizer.Visualizer, 'configure') as capture:
+            tlyrics.visualizer_preset_preview(screen, draft)
+        self.assertEqual(draft, settings.DEFAULTS)
+        capture.assert_not_called()
+        screen.clearok.assert_called_once_with(True)
+        screen.timeout.assert_called_with(-1)
+
     def test_root_only_shows_categories(self):
         config, screen, save, _, _, _ = self.run_menu([27])
         text = ' '.join(str(call.args[2]) for call in screen.addnstr.call_args_list)
@@ -121,7 +139,7 @@ class MenuTests(unittest.TestCase):
         save.assert_called_once()
 
     def test_visualizer_preset_is_draft_until_save(self):
-        keys = [curses.KEY_DOWN] * 6 + [10] + [curses.KEY_DOWN] * 7 + [10, 19]
+        keys = [curses.KEY_DOWN] * 6 + [10] + [curses.KEY_DOWN] * 7 + [10, curses.KEY_RIGHT, curses.KEY_RIGHT, 10, 19]
         config, _, save, _, _, _ = self.run_menu(keys, lambda *args: 'energetic')
         self.assertEqual(config['viz_layout'], 'mirror')
         self.assertEqual(config['viz_backend'], settings.DEFAULTS['viz_backend'])

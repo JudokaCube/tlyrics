@@ -479,13 +479,14 @@ def menu(screen, config, tracks):
                 else:
                     hint = 'Select an option to edit.' if category else 'Choose a category to change its options.'
                 put(screen, h - 3, message or hint, curses.A_DIM)
-                put(screen, h - 2, '↑↓ move · Enter edit · p preview · Ctrl+S save · Esc ' + ('back' if category else 'save & exit'), curses.A_DIM)
+                put(screen, h - 2, 'Ctrl+S save · q discard · Esc ' + ('back' if category else 'save & exit'), curses.A_DIM)
+                put(screen, h - 1, '↑↓ move · Enter edit · p preview', curses.A_DIM)
             screen.refresh()
             pressed = screen.getch()
             if pressed == curses.KEY_RESIZE:
                 screen.clearok(True)
                 continue
-            if pressed == 3:
+            if pressed in (3, ord('q')):
                 return
             if pressed == ord('p'):
                 appearance_preview(screen, draft)
@@ -536,10 +537,8 @@ def menu(screen, config, tracks):
                         appearance_preview(screen, draft)
                         theme_key = None
                     elif key == 'viz_preset':
-                        name = choose(screen, 'Visualizer preset', ['Cancel'] + list(settings.VISUALIZER_PRESETS), 'Cancel')
-                        if name != 'Cancel':
-                            draft.update(settings.VISUALIZER_PRESETS[name])
-                            message = 'Preset applied. Press p to preview; Ctrl+S saves.'
+                        visualizer_preset_preview(screen, draft)
+                        message = 'Ctrl+S saves; q discards pending changes.'
                     elif key == 'view_logs':
                         view_logs(screen)
                     elif key == 'export_report':
@@ -609,6 +608,46 @@ def menu(screen, config, tracks):
         screen.timeout(max(1, round(1000 / config["fps"])))
         apply_theme(config)
         diagnostics.configure(config)
+
+
+def visualizer_preset_preview(screen, draft):
+    names = list(settings.VISUALIZER_PRESETS)
+    index = 0
+    engine = visualizer.Visualizer()
+    screen.timeout(33)
+    try:
+        while True:
+            preview = dict(draft, **settings.VISUALIZER_PRESETS[names[index]])
+            preview['visualizer'] = True
+            rendering.chrome(screen, preview)
+            h, w = screen.getmaxyx()
+            if not small_terminal(screen, 14, 24):
+                put(screen, 1, 'Visualizer presets', curses.A_BOLD, True)
+                put(screen, 3, f'{index + 1}/{len(names)}: {names[index]}', curses.A_REVERSE, True)
+                put(screen, 5, 'Simulated audio', curses.A_DIM, True)
+                now = time.monotonic()
+                engine.latest = tuple(.15 + .65 * (1 + math.sin(now * 2 + i * .35)) / 2
+                                      for i in range(preview['viz_bars']))
+                engine.stamp = now
+                panel_height = min(preview['viz_height'], h - 10)
+                panel = (7 + (h - 10 - panel_height) // 2, panel_height)
+                visualizer.draw(screen, engine, preview, panel)
+                put(screen, h - 3, '←→ preset · Enter apply', centered=True)
+                put(screen, h - 2, 'Esc cancel', centered=True)
+            screen.refresh()
+            key = screen.getch()
+            if key in (27, 3, ord('q')):
+                return
+            if key == curses.KEY_RESIZE:
+                screen.clearok(True)
+            elif key in (curses.KEY_LEFT, curses.KEY_UP, curses.KEY_RIGHT, curses.KEY_DOWN):
+                index = (index + (1 if key in (curses.KEY_RIGHT, curses.KEY_DOWN) else -1)) % len(names)
+                engine = visualizer.Visualizer()
+            elif key in (10, 13) and h >= 14 and w >= 24:
+                draft.update(settings.VISUALIZER_PRESETS[names[index]])
+                return
+    finally:
+        screen.timeout(-1)
 
 
 def appearance_preview(screen, draft):
@@ -925,7 +964,7 @@ def ui(screen, players, args, config):
                         if calibration:
                             target = calibration.lines[calibration.index]
                             put(screen, 5, f'Calibration · {len(calibration.samples)} distinct taps', centered=True)
-                            put(screen, 7, 'Tap Space as this line begins:', curses.A_BOLD, True)
+                            put(screen, 7, 'Enter when ready' if not calibration.ready else 'Tap Space as this line begins:', curses.A_BOLD, True)
                             if calibration_message:
                                 put(screen, 1, calibration_message, curses.A_DIM)
                             rendering.draw(screen, lyrics.Document([lyrics.Line(0, target.text)]), 0,
@@ -965,6 +1004,14 @@ def ui(screen, players, args, config):
                     continue
                 if pressed in (27, 3, ord('c')):
                     calibration = None
+                elif not calibration.ready:
+                    if pressed in (10, 13):
+                        position = playback.seconds()
+                        if position is not None:
+                            if calibration.prepare(position, config['offset'] + config['song_offsets'].get(settings.song_key(current), 0)):
+                                calibration_message = 'Listen for the first word. Tap three lines, then Enter.'
+                            else:
+                                calibration_message = 'Not enough song left. Seek earlier, then press Enter.'
                 elif pressed in (curses.KEY_LEFT, curses.KEY_RIGHT):
                     calibration.move(1 if pressed == curses.KEY_RIGHT else -1)
                 elif pressed in (curses.KEY_BACKSPACE, 127, 8):
@@ -1004,7 +1051,8 @@ def ui(screen, players, args, config):
                     try:
                         calibration = experience.Calibration(doc, position,
                             config['offset'] + config['song_offsets'].get(settings.song_key(current), 0))
-                        calibration_message = ''
+                        calibration.ready = False
+                        calibration_message = 'Tap Space when you hear the first word, not when it lights up.'
                         notice = ''
                     except ValueError as exc:
                         notice, notice_until = str(exc), time.monotonic() + 4
