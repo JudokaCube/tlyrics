@@ -85,3 +85,22 @@ The app checks daily and asks before updating. Settings offer **ask**, **auto** 
 **off**, plus a check interval. `--version` shows your version; `--check-updates`
 checks from the command line. `--update` offers to install, and `--update --yes`
 accepts automatically. Accepted in-app updates restart the app and keep preferences.
+
+## Diagnostics
+
+Playback hides technical status and error details by default. In **Settings /
+Diagnostics**, enable **Show technical details** when troubleshooting, view local
+logs, export a bug report, or clear the logs. Logging can be **off**, **errors**
+(default), or **debug**. Keep 2, 3 (default), or 7 files, capped at 256 KiB each.
+Debug adds lifecycle events. Turning logging off stops new entries; use Clear to
+delete existing entries. Diagnostics stay in `~/.local/state/tlyrics`
+(`XDG_STATE_HOME` is supported) and are never uploaded automatically.
+
+```sh
+tlyrics --logs
+tlyrics --export-report ~/Downloads/tlyrics-report.json
+```
+
+Reports contain versions, display/playback preferences, and error types with code
+locations. Lyrics, song history, browser tokens, local paths and exception messages
+are excluded. Export requires a new filename. Review the report before sharing it.

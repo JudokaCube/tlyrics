@@ -19,7 +19,8 @@ DEFAULTS = dict(player='auto', theme='cyan', layout='scroll', align='center',
                 word_sync=True, center_active=True, word_style='whole', glow='off', gradient='off', palette='ocean',
                 pulse=False, animate_gradient=False, dim_inactive=True, underline_word=False,
                 max_width=100, fps=30, offset_step=0.05, song_offsets={},
-                update_mode='ask', update_hours=24)
+                update_mode='ask', update_hours=24, show_diagnostics=False,
+                log_level='errors', log_files=3)
 CHOICES = dict(theme=['cyan', 'green', 'purple', 'amber', 'white'],
                layout=['scroll', 'focus', 'compact'], align=['center', 'left'],
                progress=[True, False], timestamps=[False, True], spacing=[1, 2],
@@ -29,7 +30,8 @@ CHOICES = dict(theme=['cyan', 'green', 'purple', 'amber', 'white'],
                pulse=[False, True], animate_gradient=[False, True], dim_inactive=[True, False],
                underline_word=[True, False], max_width=[60, 80, 100, 0], fps=[15, 30, 60],
                offset_step=[0.05, 0.1, 0.2], update_mode=['ask', 'auto', 'off'],
-               update_hours=[6, 24, 168])
+               update_hours=[6, 24, 168], show_diagnostics=[False, True],
+               log_level=['off', 'errors', 'debug'], log_files=[2, 3, 7])
 
 
 DEFAULTS.update(background='terminal', border='none', title_style='bold',

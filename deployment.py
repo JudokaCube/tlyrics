@@ -12,7 +12,7 @@ import tempfile
 
 RUNTIME_FILES = ('tlyrics.py', 'settings.py', 'browser_bridge.py', 'browser.user.js',
                  'lyrics.py', 'timing.py', 'rendering.py', 'updates.py', 'deployment.py',
-                 'visualizer.py', 'players.py', 'requirements.txt', 'VERSION', 'LICENSE')
+                 'visualizer.py', 'diagnostics.py', 'players.py', 'requirements.txt', 'VERSION', 'LICENSE')
 MARKER = 'tlyrics-install-v1'
 
 

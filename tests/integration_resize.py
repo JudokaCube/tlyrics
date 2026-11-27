@@ -19,15 +19,21 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import tlyrics,settings,visualizer
 class Screen:
-    def __init__(self,screen): self.screen=screen
+    def __init__(self,screen): self.screen=screen; self.resized=False
     def __getattr__(self,key): return getattr(self.screen,key)
+    def acknowledge(self):
+        if self.resized:
+            self.resized=False
+            os.write(1,b"RESIZED")
     def getch(self):
+        self.acknowledge()
         key=self.screen.getch()
-        if key==curses.KEY_RESIZE: os.write(1,b"RESIZED")
+        if key==curses.KEY_RESIZE: self.resized=True
         return key
     def get_wch(self):
+        self.acknowledge()
         key=self.screen.get_wch()
-        if key==curses.KEY_RESIZE: os.write(1,b"RESIZED")
+        if key==curses.KEY_RESIZE: self.resized=True
         return key
 class Players:
     changed=threading.Event()

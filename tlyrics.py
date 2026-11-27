@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Terminal Lyrics - synced lyrics for desktop and browser music players."""
 import argparse
+import diagnostics
 import bisect
 import concurrent.futures
 import curses
@@ -394,9 +395,12 @@ SETTINGS_GROUPS = {
 }
 
 
-ROOT_CATEGORIES = tuple(SETTINGS_GROUPS) + ('Visualizer', 'Settings backup')
+ROOT_CATEGORIES = tuple(SETTINGS_GROUPS) + ('Visualizer', 'Settings backup', 'Diagnostics')
 SETTINGS_GROUPS['Appearance'] += [('preset', 'Apply appearance preset'), ('Layout details', 'Layout details >')]
 SETTINGS_GROUPS.update({
+    'Diagnostics': [('show_diagnostics', 'Show technical details'), ('log_level', 'Logging'),
+                    ('log_files', 'Retained log files'), ('view_logs', 'View diagnostics'),
+                    ('export_report', 'Export bug report'), ('clear_logs', 'Clear diagnostics')],
     'Settings backup': [('export_settings', 'Export settings'), ('import_settings', 'Import settings')],
     'Layout details': [('background', 'Background'), ('border', 'Border'), ('title_style', 'Song title style'),
                        ('show_header', 'App heading'), ('show_status', 'Playback details'),
@@ -475,7 +479,8 @@ def menu(screen, config, tracks):
                             settings.adopt(config, draft)
                         return
                     except (OSError, ValueError) as exc:
-                        message = f'Could not save: {exc}'
+                        diagnostics.record('Settings save failed', exc)
+                        message = f'Could not save: {exc}' if config['show_diagnostics'] else 'Could not save. See Diagnostics.'
                         continue
                 selections[category] = index
                 category, index = parents.pop()
@@ -507,7 +512,17 @@ def menu(screen, config, tracks):
                         settings.save(draft)
                         settings.adopt(config, draft)
                         return
-                    if key == 'export_settings':
+                    if key == 'view_logs':
+                        view_logs(screen)
+                    elif key == 'export_report':
+                        path = prompt(screen, 'Export bug report to a new .json file')
+                        if path:
+                            message = f'Exported to {diagnostics.export(path, draft)}'
+                    elif key == 'clear_logs':
+                        if choose(screen, 'Clear local diagnostics?', ['No', 'Yes'], 'No') == 'Yes':
+                            diagnostics.clear()
+                            message = 'Diagnostics cleared.'
+                    elif key == 'export_settings':
                         path = prompt(screen, 'Export path (new .json file; ~ is supported)')
                         if path:
                             message = f'Exported to {settings.export_file(path, draft)}'
@@ -560,10 +575,39 @@ def menu(screen, config, tracks):
                                 settings.save(config)
                                 message = f'Removed {name}'
                 except (ValueError, OSError) as exc:
-                    message = str(exc)
+                    diagnostics.record('Settings action failed', exc)
+                    message = str(exc) if config['show_diagnostics'] else 'Action failed. See Diagnostics.'
     finally:
         screen.timeout(max(1, round(1000 / config["fps"])))
         apply_theme(config)
+        diagnostics.configure(config)
+
+
+def view_logs(screen):
+    offset = 0
+    while True:
+        screen.erase()
+        h, w = screen.getmaxyx()
+        lines = []
+        for line in diagnostics.read().splitlines()[-500:]:
+            rows = rendering.wrap([(c, 0, False) for c in line], max(1, w - 2))
+            lines.extend(''.join(c for c, _, _ in row) for row in rows)
+        room = max(1, h - 5)
+        offset = min(offset, max(0, len(lines) - room))
+        put(screen, 0, 'Diagnostics (local)', curses.A_BOLD)
+        for i, line in enumerate(lines[offset:offset + room]):
+            put(screen, i + 2, line)
+        put(screen, h - 2, '↑↓ scroll · Esc back', curses.A_DIM)
+        screen.refresh()
+        key = screen.getch()
+        if key in (27, 3, ord('q')):
+            return
+        if key == curses.KEY_DOWN:
+            offset += 1
+        elif key == curses.KEY_UP:
+            offset = max(0, offset - 1)
+        elif key == curses.KEY_RESIZE:
+            screen.clearok(True)
 
 
 def setup_input(screen):
@@ -637,6 +681,7 @@ def ui(screen, players, args, config):
                 except OSError as exc:
                     config['bridge'] = False
                     bridge_error = f'Browser bridge unavailable: {exc}'
+                    diagnostics.record('Browser bridge failed', exc)
             elif not config['bridge'] and players.bridge:
                 players.bridge.close()
                 players.bridge = None
@@ -655,6 +700,7 @@ def ui(screen, players, args, config):
                 except Exception as exc:
                     current = None
                     error = str(exc)
+                    diagnostics.record('Player polling failed', exc)
                 polling = None
             playback.poll_interval = config["interval"]
             playback.update(current)
@@ -675,6 +721,7 @@ def ui(screen, players, args, config):
                 try:
                     result, parsed = future.result()
                 except Exception as exc:
+                    diagnostics.record('Lyrics loading failed', exc)
                     result = {'message': f'Lyrics unavailable: {exc}'}
                     parsed = lyrics.Document()
                 if result.get('message') and (doc.lines or doc.plain):
@@ -683,15 +730,19 @@ def ui(screen, players, args, config):
                     data = result
                     doc = parsed
                 future = None
+                if doc.warning:
+                    diagnostics.record('Lyrics parsing warning')
+                if result.get('message'):
+                    diagnostics.record('Lyrics lookup unavailable')
             rendering.chrome(screen, config)
             h, w = screen.getmaxyx()
             if not small_terminal(screen):
                 lyric_top, lyric_bottom, panel = visualizer.region(h, config)
                 if config['show_header']:
                     put(screen, 0, f'tlyrics {updates.VERSION}', accent)
-                if updater.message:
+                if updater.message and config['show_diagnostics']:
                     put(screen, 1, updater.message, curses.A_DIM)
-                if bridge_error:
+                if bridge_error and config['show_diagnostics']:
                     put(screen, 1, bridge_error)
                 if current and current.title:
                     put(screen, 2, current.title, {'bold': curses.A_BOLD, 'accent': accent, 'plain': 0}[config['title_style']], True)
@@ -701,7 +752,7 @@ def ui(screen, players, args, config):
                     offset = config['offset'] + song_offset
                     stamp = clock(position) if position is not None else '--:--'
                     if config['show_status']:
-                        put(screen, 5, f'{current.player} · {current.status} · {stamp} / {clock(current.duration)} · offset {offset:+.2f}s', centered=True)
+                        put(screen, 5, (f'{current.player} · {current.status} · {stamp} / {clock(current.duration)} · offset {offset:+.2f}s' if config['show_diagnostics'] else f'{stamp} / {clock(current.duration)}'), centered=True)
                     if config["progress"] and position is not None and current.duration:
                         length = max(1, w - 6)
                         put(screen, 6, rendering.progress_bar(position / current.duration, length, config['progress_style']), accent)
@@ -713,14 +764,14 @@ def ui(screen, players, args, config):
                             mode += ' | coarse player timing'
                         elif playback.cadence >= 0.5:
                             mode += ' | interpolating player clock'
-                        if config['show_status'] or doc.warning or (config['word_sync'] and mode.startswith('Line sync')):
+                        if config['show_diagnostics']:
                             put(screen, 7, mode + (' | ' + doc.warning if doc.warning else ''), curses.A_DIM, True)
                         rendering.draw(screen, doc, lyric_time, config, top=lyric_top, bottom=lyric_bottom)
                     elif future:
                         put(screen, (lyric_top + lyric_bottom) // 2, 'Finding lyrics…', centered=True)
                     else:
                         plain = doc.plain or data.get('plainLyrics') or ''
-                        message = data.get('message') or doc.warning or ('Instrumental ♪' if data.get('instrumental') else
+                        message = ((data.get('message') or doc.warning) if config['show_diagnostics'] else '') or ('Instrumental ♪' if data.get('instrumental') else
                                   'Player does not report position; sync unavailable.' if doc.lines else
                                   'Only unsynced lyrics available. Use ↑ / ↓ to scroll.' if plain else 'No lyrics available.')
                         put(screen, 7, message, curses.A_DIM, True)
@@ -729,7 +780,7 @@ def ui(screen, players, args, config):
                         for row, words in enumerate(display[scroll:scroll + room]):
                             put(screen, lyric_top + row * config['spacing'], words, centered=config['align'] == 'center')
                 else:
-                    put(screen, (lyric_top + lyric_bottom) // 2, error or 'Waiting for a supported music player...', centered=True)
+                    put(screen, (lyric_top + lyric_bottom) // 2, (error if config['show_diagnostics'] else '') or 'Waiting for a supported music player...', centered=True)
                 visualizer.draw(screen, visuals, config, panel)
                 if config['show_hints']:
                     put(screen, h - 2, 'q quit  s settings  v visualizer  u updates  [ / ] timing  0 reset  r retry', curses.A_DIM, True)
@@ -754,6 +805,7 @@ def ui(screen, players, args, config):
                     settings.save(config)
                 except OSError as exc:
                     bridge_error = f'Could not save visualizer setting: {exc}'
+                    diagnostics.record('Visualizer preference save failed', exc)
             if pressed == ord('u'):
                 updater.check(config, manual=True)
             if current and pressed in (ord('['), ord(']'), ord('0')):
@@ -769,6 +821,7 @@ def ui(screen, players, args, config):
                     settings.save(config)
                 except OSError as exc:
                     bridge_error = f'Could not save song timing: {exc}'
+                    diagnostics.record('Song timing save failed', exc)
             elif pressed == curses.KEY_DOWN:
                 scroll += 1
             elif pressed == curses.KEY_UP:
@@ -796,6 +849,8 @@ def main():
     backup = parser.add_mutually_exclusive_group()
     backup.add_argument('--export-settings', metavar='FILE', help='Export settings to a new JSON file')
     backup.add_argument('--import-settings', metavar='FILE', help='Validate and save settings from JSON')
+    parser.add_argument('--logs', action='store_true', help='Read local diagnostics')
+    parser.add_argument('--export-report', metavar='FILE', help='Export a private-data-free bug report')
     parser.add_argument('--version', action='version', version=f'tlyrics {updates.VERSION}')
     parser.add_argument('--check-updates', action='store_true', help='Check for a new release')
     parser.add_argument('--update', action='store_true', help='Check and offer to install an update')
@@ -804,6 +859,8 @@ def main():
     if args.yes and not args.update:
         parser.error('--yes requires --update')
     config = settings.load()
+    diagnostics.configure(config)
+    diagnostics.record('App started', debug=True)
     if args.player:
         config['player'] = args.player
     if args.offset is not None:
@@ -812,6 +869,12 @@ def main():
         config['offset'] = args.offset
     restart = None
     try:
+        if args.logs:
+            print(diagnostics.read())
+            return 0
+        if args.export_report:
+            print(f'Exported to {diagnostics.export(args.export_report, config)}')
+            return 0
         if args.export_settings:
             print(f'Exported to {settings.export_file(args.export_settings, config)}')
             return 0
@@ -850,17 +913,27 @@ def main():
         else:
             if not sys.stdin.isatty() or not sys.stdout.isatty():
                 parser.error('Run in an interactive terminal, or use --status / --list.')
-            restart = curses.wrapper(ui, players, args, config)
+            with diagnostics.quiet_errors():
+                restart = curses.wrapper(ui, players, args, config)
     except KeyboardInterrupt:
         pass
     except Exception as exc:
-        print(f'tlyrics: {exc}', file=sys.stderr)
+        diagnostics.record('App command failed', exc)
+        if config['show_diagnostics']:
+            print(f'tlyrics: {exc}', file=sys.stderr)
         return 1
     finally:
         if 'players' in locals():
-            players.close()
+            try:
+                players.close()
+            except Exception as exc:
+                diagnostics.record('Player shutdown failed', exc)
     if restart:
-        os.execv(str(restart), [str(restart), *sys.argv[1:]])
+        try:
+            os.execv(str(restart), [str(restart), *sys.argv[1:]])
+        except OSError as exc:
+            diagnostics.record('Restart failed', exc)
+            return 1
     return 0
 
 

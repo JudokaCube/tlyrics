@@ -75,7 +75,7 @@ class MenuTests(unittest.TestCase):
     def test_every_editable_setting_has_exactly_one_category(self):
         keys = [key for rows in tlyrics.SETTINGS_GROUPS.values() for key, _ in rows]
         self.assertEqual(len(keys), len(set(keys)))
-        self.assertEqual(set(settings.DEFAULTS) - {'aliases', 'song_offsets'}, set(keys) - set(tlyrics.SETTINGS_GROUPS) - {'export_settings', 'import_settings', 'preset', 'browser', 'add', 'remove', 'check_updates'})
+        self.assertEqual(set(settings.DEFAULTS) - {'aliases', 'song_offsets'}, set(keys) - set(tlyrics.SETTINGS_GROUPS) - {'view_logs', 'export_report', 'clear_logs', 'export_settings', 'import_settings', 'preset', 'browser', 'add', 'remove', 'check_updates'})
 
     def test_invalid_local_file_does_not_create_background_workers(self):
         from types import SimpleNamespace

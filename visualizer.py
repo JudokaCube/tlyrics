@@ -10,6 +10,7 @@ import threading
 import time
 
 import rendering
+import diagnostics
 
 CAPTURE_KEYS = ('viz_backend', 'viz_source', 'viz_bars', 'viz_channels', 'viz_fps',
                 'viz_sensitivity', 'viz_autosens', 'viz_noise')
@@ -142,11 +143,13 @@ class Visualizer:
         tool = capture_command(config)[0]
         if not shutil.which(tool):
             self.message = f'Audio capture needs {tool}; install your audio service tools or select the other backend.'
+            diagnostics.record('Visualizer capture tool missing')
             return
         self.stop = threading.Event()
         self.message = 'Connecting to audio output...'
         self.thread = threading.Thread(target=self._capture, args=(dict(config), self.stop), daemon=True)
         self.thread.start()
+        diagnostics.record('Visualizer started', debug=True)
 
     def _capture(self, config, stop):
         process = None
@@ -192,10 +195,13 @@ class Visualizer:
                         if not stop.is_set() and stop is self.stop and not self.stamp and now - started > 5:
                             self.message = 'No audio frames. Check the output device or audio backend.'
         except ImportError:
+            diagnostics.record('Visualizer dependency missing')
             with self.lock:
                 if not stop.is_set() and stop is self.stop:
                     self.message = 'Spectrum analysis needs NumPy; run sh install.sh to repair the installation.'
         except (OSError, ValueError, RuntimeError) as exc:
+            if not stop.is_set():
+                diagnostics.record('Visualizer capture failed', exc)
             with self.lock:
                 if not stop.is_set() and stop is self.stop:
                     self.message = f'Visualizer: {exc}'
@@ -380,6 +386,8 @@ def draw(screen, engine, config, panel):
     left = max(1, (width - columns) // 2)
     levels = engine.frame(config)
     if engine.message:
+        if not config['show_diagnostics']:
+            return
         text = rendering.safe_text(engine.message)[:max(0, width - 4)]
         try:
             screen.addstr(y, 2, text, curses.A_DIM)

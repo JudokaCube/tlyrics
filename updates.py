@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 
 import deployment
+import diagnostics
 import settings
 
 VERSION = (Path(__file__).with_name('VERSION')).read_text().strip()
@@ -216,6 +217,7 @@ class Manager:
             else:
                 self.message = f'tlyrics {VERSION} is up to date' if result else 'No published releases yet'
         except Exception as exc:
+            diagnostics.record('Update failed', exc)
             self.message = f'Update failed: {exc}'
         finally:
             if action == 'check':
