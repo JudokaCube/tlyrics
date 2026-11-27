@@ -22,6 +22,11 @@ tlyrics
 - `v`: toggle the visualizer. `q` or Esc from playback: quit.
 - `[` / `]`: adjust this song's timing. `0`: reset. `r`: retry lyrics.
 - `u`: check for updates. Arrow keys scroll untimed lyrics.
+- `c`: calibrate sync. Tap Space as each displayed line starts; use left/right to
+  choose a line. After at least three distinct taps, Enter reviews the adjustment
+  before saving it for this song. Backspace resets taps; Esc cancels.
+- `l`: lyric sources. Check timestamp availability, choose another LRCLIB version,
+  load a local lyrics file, or return to automatic lookup.
 
 `tlyrics --settings` opens settings directly. `--list` lists players;
 `--player spotify` selects one. `--lrc song.lrc` loads local line/word-timed lyrics
@@ -41,6 +46,11 @@ Word sync needs actual word timestamps. Songs without them stay line-synced, eve
 with word sync enabled. Timing also depends on the recording and lyric source.
 Positive timing offsets show lyrics earlier. Settings include a global offset and
 saved per-song adjustments. Optional PyGObject enables immediate MPRIS seek/pause signals.
+Calibration changes the song offset, leaving the global offset alone. It cannot
+create missing word timestamps or fix lyrics matched to a different recording.
+Manual source choices are saved per song, including a copy of local lyrics, in
+`~/.config/tlyrics/lyrics`. They stay selected until you choose automatic lookup,
+even with caching disabled. Source search sends the title and artist to LRCLIB.
 **Playback & lyrics / Keep playing line centered** keeps the current line in the
 middle, including at the start and end of a song. Turn it off for compact scrolling.
 
@@ -51,6 +61,11 @@ styles in settings. Advanced options have their own submenus. Gradients need a
 256-colour terminal; glow is simulated with colour and brightness.
 Resizing reflows lyrics and fits complete visualizer bars. Playback needs at least
 24 columns by 14 rows; smaller windows show a resize prompt and keep your place.
+Press `p` anywhere in settings for an animated appearance preview. Up/down selects
+an option, left/right changes it, and Esc returns. The preview uses sample lyrics
+and simulated audio; save or discard changes through the settings menu.
+**Visualizer / Apply visualizer preset** offers subtle, smooth and energetic
+styles. Presets preserve the selected audio backend/device and enabled state.
 
 **No CAVA required.** tlyrics performs its own FFT spectrum analysis using NumPy.
 Audio comes from your system output through `parec` (PulseAudio) or `pw-record`

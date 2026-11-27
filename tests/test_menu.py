@@ -75,7 +75,7 @@ class MenuTests(unittest.TestCase):
     def test_every_editable_setting_has_exactly_one_category(self):
         keys = [key for rows in tlyrics.SETTINGS_GROUPS.values() for key, _ in rows]
         self.assertEqual(len(keys), len(set(keys)))
-        self.assertEqual(set(settings.DEFAULTS) - {'aliases', 'song_offsets'}, set(keys) - set(tlyrics.SETTINGS_GROUPS) - {'view_logs', 'export_report', 'clear_logs', 'export_settings', 'import_settings', 'preset', 'browser', 'add', 'remove', 'check_updates'})
+        self.assertEqual(set(settings.DEFAULTS) - {'aliases', 'song_offsets'}, set(keys) - set(tlyrics.SETTINGS_GROUPS) - {'preview', 'viz_preset', 'view_logs', 'export_report', 'clear_logs', 'export_settings', 'import_settings', 'preset', 'browser', 'add', 'remove', 'check_updates'})
 
     def test_invalid_local_file_does_not_create_background_workers(self):
         from types import SimpleNamespace
@@ -119,3 +119,17 @@ class MenuTests(unittest.TestCase):
         self.assertEqual(config['theme'], 'green')
         self.assertEqual(screen.clearok.call_count, 2)
         save.assert_called_once()
+
+    def test_visualizer_preset_is_draft_until_save(self):
+        keys = [curses.KEY_DOWN] * 6 + [10] + [curses.KEY_DOWN] * 7 + [10, 19]
+        config, _, save, _, _, _ = self.run_menu(keys, lambda *args: 'energetic')
+        self.assertEqual(config['viz_layout'], 'mirror')
+        self.assertEqual(config['viz_backend'], settings.DEFAULTS['viz_backend'])
+        self.assertEqual(config['visualizer'], settings.DEFAULTS['visualizer'])
+        save.assert_called_once()
+
+    def test_preview_draft_can_be_discarded(self):
+        with patch.object(tlyrics, 'appearance_preview', side_effect=lambda screen, draft: draft.update(theme='green')):
+            config, _, save, _, _, _ = self.run_menu([ord('p'), curses.KEY_UP, 10])
+        self.assertEqual(config['theme'], settings.DEFAULTS['theme'])
+        save.assert_not_called()

@@ -77,6 +77,20 @@ PRESETS = {
                  active_marker='dot', layout='scroll', progress_style='line'),
 }
 
+VISUALIZER_PRESETS = {
+    'subtle': dict(viz_layout='bars', viz_height=3, viz_width=60, viz_bars=16,
+                   viz_smoothing='soft', viz_decay='slow', viz_fps=30,
+                   viz_colour='theme', viz_peaks=False, viz_gap=1, viz_glyph='blocks'),
+    'smooth': dict(viz_layout='bars', viz_height=5, viz_width=0, viz_bars=32,
+                   viz_smoothing='soft', viz_decay='slow', viz_fps=30,
+                   viz_colour='palette', viz_palette='ocean', viz_peaks=False,
+                   viz_gap=1, viz_glyph='blocks'),
+    'energetic': dict(viz_layout='mirror', viz_height=7, viz_width=0, viz_bars=48,
+                      viz_smoothing='fast', viz_decay='fast', viz_fps=60,
+                      viz_colour='palette', viz_palette='sunset', viz_peaks=False,
+                      viz_gap=1, viz_glyph='blocks'),
+}
+
 
 class Preferences(dict):
     """Remember the loaded values so saves only write locally changed keys."""

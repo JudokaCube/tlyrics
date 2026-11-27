@@ -2,6 +2,7 @@
 """Terminal Lyrics - synced lyrics for desktop and browser music players."""
 import argparse
 import diagnostics
+import experience
 import bisect
 import concurrent.futures
 import curses
@@ -190,9 +191,11 @@ NEXT_REQUEST = 0.0
 RETRY_UNTIL = 0.0
 
 
-def fetch_record(params):
+def fetch_record(params, endpoint='get'):
     global NEXT_REQUEST, RETRY_UNTIL
-    url = 'https://lrclib.net/api/get?' + urllib.parse.urlencode(params)
+    if endpoint not in ('get', 'search'):
+        raise ValueError('Unsupported lyrics request')
+    url = 'https://lrclib.net/api/' + endpoint + '?' + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={'User-Agent': f'tlyrics/{updates.VERSION} (https://github.com/JudokaCube/tlyrics)'})
     with REQUEST_LOCK:
         now = time.monotonic()
@@ -210,7 +213,7 @@ def fetch_record(params):
             try:
                 if exc.code == 404:
                     return {'message': 'No matching lyrics found. Press r to retry, or use --lrc FILE.'}
-                if exc.code == 429:
+                if exc.code in (429, 503):
                     header = exc.headers.get('Retry-After', '60') if exc.headers else '60'
                     try:
                         delay = float(header)
@@ -230,6 +233,10 @@ def fetch_record(params):
             return {'message': f'Lyrics unavailable: {exc}. Press r to retry.'}
         finally:
             NEXT_REQUEST = time.monotonic() + 0.25
+    if endpoint == 'search':
+        if not isinstance(data, list) or len(data) > 20 or not all(valid_lyrics(record) for record in data):
+            return {'message': 'Invalid lyrics search response.'}
+        return data
     if not valid_lyrics(data):
         return {'message': 'Invalid lyrics response. Press r to retry.'}
     return data
@@ -277,7 +284,15 @@ def valid_lyrics(data):
 
 
 def load_lyrics(track, refresh=False, cache_enabled=True):
-    record = get_lyrics(track, refresh, cache_enabled)
+    try:
+        record = experience.selected(track)
+        if record is not None and not valid_lyrics(record):
+            raise ValueError('Invalid saved lyrics selection')
+    except (OSError, ValueError) as exc:
+        diagnostics.record('Saved lyrics selection failed', exc)
+        record = None
+    if record is None:
+        record = get_lyrics(track, refresh, cache_enabled)
     return record, lyrics.from_record(record)
 
 
@@ -397,6 +412,7 @@ SETTINGS_GROUPS = {
 
 ROOT_CATEGORIES = tuple(SETTINGS_GROUPS) + ('Visualizer', 'Settings backup', 'Diagnostics')
 SETTINGS_GROUPS['Appearance'] += [('preset', 'Apply appearance preset'), ('Layout details', 'Layout details >')]
+SETTINGS_GROUPS['Appearance'] += [('preview', 'Live appearance preview')]
 SETTINGS_GROUPS.update({
     'Diagnostics': [('show_diagnostics', 'Show technical details'), ('log_level', 'Logging'),
                     ('log_files', 'Retained log files'), ('view_logs', 'View diagnostics'),
@@ -409,7 +425,7 @@ SETTINGS_GROUPS.update({
     'Visualizer': [('visualizer', 'Enable visualizer'), ('viz_layout', 'Layout'),
                    ('viz_position', 'Position'), ('viz_height', 'Height (rows)'),
                    ('viz_width', 'Width (0 = auto)'), ('Audio & response', 'Audio & response >'),
-                   ('Visualizer style', 'Style & colours >')],
+                   ('Visualizer style', 'Style & colours >'), ('viz_preset', 'Apply visualizer preset')],
     'Audio & response': [('viz_backend', 'Audio backend'), ('viz_source', 'Output monitor (PulseAudio)'),
                          ('viz_bars', 'Frequency bands'), ('viz_channels', 'Channels'),
                          ('viz_fps', 'Analysis frame rate'), ('viz_autosens', 'Automatic sensitivity'),
@@ -463,7 +479,7 @@ def menu(screen, config, tracks):
                 else:
                     hint = 'Select an option to edit.' if category else 'Choose a category to change its options.'
                 put(screen, h - 3, message or hint, curses.A_DIM)
-                put(screen, h - 2, '↑ / ↓ move · Enter select · Ctrl+S save · Esc ' + ('back' if category else 'save & exit'), curses.A_DIM)
+                put(screen, h - 2, '↑↓ move · Enter edit · p preview · Ctrl+S save · Esc ' + ('back' if category else 'save & exit'), curses.A_DIM)
             screen.refresh()
             pressed = screen.getch()
             if pressed == curses.KEY_RESIZE:
@@ -471,6 +487,10 @@ def menu(screen, config, tracks):
                 continue
             if pressed == 3:
                 return
+            if pressed == ord('p'):
+                appearance_preview(screen, draft)
+                theme_key = None
+                continue
             if pressed == 27:
                 if category is None:
                     try:
@@ -512,7 +532,15 @@ def menu(screen, config, tracks):
                         settings.save(draft)
                         settings.adopt(config, draft)
                         return
-                    if key == 'view_logs':
+                    if key == 'preview':
+                        appearance_preview(screen, draft)
+                        theme_key = None
+                    elif key == 'viz_preset':
+                        name = choose(screen, 'Visualizer preset', ['Cancel'] + list(settings.VISUALIZER_PRESETS), 'Cancel')
+                        if name != 'Cancel':
+                            draft.update(settings.VISUALIZER_PRESETS[name])
+                            message = 'Preset applied. Press p to preview; Ctrl+S saves.'
+                    elif key == 'view_logs':
                         view_logs(screen)
                     elif key == 'export_report':
                         path = prompt(screen, 'Export bug report to a new .json file')
@@ -583,6 +611,127 @@ def menu(screen, config, tracks):
         diagnostics.configure(config)
 
 
+def appearance_preview(screen, draft):
+    options = [('theme', 'Theme'), ('background', 'Background'), ('border', 'Border'),
+               ('layout', 'Lyrics layout'), ('align', 'Alignment'), ('spacing', 'Line spacing'),
+               ('gradient', 'Gradient'), ('palette', 'Lyric palette'), ('glow', 'Glow'),
+               ('word_style', 'Word highlight'), ('visualizer', 'Visualizer'),
+               ('viz_layout', 'Visualizer layout'), ('viz_palette', 'Visualizer palette'),
+               ('viz_height', 'Visualizer height'), ('viz_smoothing', 'Visualizer smoothing')]
+    doc = lyrics.parse_lrc('[00:00]<00:00>Make <00:01>your <00:02>terminal <00:03>your own\n'
+                           '[00:04]<00:04>Colours <00:05>move <00:06>with <00:07>the music<00:08>')
+    engine = visualizer.Visualizer()  # Synthetic frames only; no audio process.
+    index, started = 0, time.monotonic()
+    apply_theme(draft)
+    screen.timeout(33)
+    try:
+        while True:
+            now = time.monotonic()
+            position = (now - started) % 8
+            rendering.chrome(screen, draft)
+            h, w = screen.getmaxyx()
+            if not small_terminal(screen, 14, 24):
+                put(screen, 0, 'Appearance preview (sample)', curses.A_BOLD)
+                put(screen, 2, 'Sample lyrics and simulated audio', centered=True)
+                top, bottom, panel = visualizer.region(h, draft)
+                rendering.draw(screen, doc, position, draft, top=top, bottom=bottom)
+                engine.latest = tuple(.15 + .65 * (1 + math.sin(now * 2 + i * .35)) / 2 for i in range(draft['viz_bars']))
+                engine.stamp = now
+                visualizer.draw(screen, engine, draft, panel)
+                key, label = options[index]
+                put(screen, 4, f'{label}: {draft[key]}', curses.A_REVERSE, True)
+                put(screen, 5, '↑↓ option · ←→ change · Esc back', centered=True)
+                put(screen, h - 2, 'Changes stay pending until settings are saved.', curses.A_DIM)
+            screen.refresh()
+            pressed = screen.getch()
+            if pressed in (27, 3, 10, 13):
+                return
+            if pressed == curses.KEY_RESIZE:
+                screen.clearok(True)
+            elif pressed in (curses.KEY_UP, curses.KEY_DOWN):
+                index = (index + (1 if pressed == curses.KEY_DOWN else -1)) % len(options)
+            elif pressed in (curses.KEY_LEFT, curses.KEY_RIGHT):
+                key = options[index][0]
+                values = settings.CHOICES[key]
+                draft[key] = values[(values.index(draft[key]) + (1 if pressed == curses.KEY_RIGHT else -1)) % len(values)]
+                apply_theme(draft)
+    finally:
+        screen.timeout(-1)
+
+
+def wait_source(screen, future):
+    screen.timeout(100)
+    try:
+        while not future.done():
+            screen.erase()
+            put(screen, 2, 'Finding matching lyrics...')
+            put(screen, 4, 'Esc cancels')
+            screen.refresh()
+            key = screen.getch()
+            if key in (27, 3):
+                future.cancel()
+                return None
+            if key == curses.KEY_RESIZE:
+                screen.clearok(True)
+        return future.result()
+    finally:
+        screen.timeout(-1)
+
+
+def source_menu(screen, track, data, doc, pool, cache_enabled=True):
+    screen.timeout(-1)
+    message = experience.source_summary(data, doc)
+    while True:
+        action = choose(screen, message, ['Back', 'Find another LRCLIB version', 'Load local lyrics file',
+                                        'Use automatic lookup'], 'Back')
+        try:
+            if action == 'Back':
+                return None
+            if action == 'Use automatic lookup':
+                result = wait_source(screen, pool.submit(get_lyrics, track, True, cache_enabled))
+                if result is None:
+                    continue
+                if result.get('message'):
+                    raise ValueError('Lookup failed. Your current lyrics were kept.')
+                parsed = lyrics.from_record(result)
+                if not parsed.lines and not parsed.plain and not result.get('instrumental'):
+                    raise ValueError('No usable lyrics found. Your current lyrics were kept.')
+                experience.automatic(track)
+                return result, parsed
+            if action == 'Load local lyrics file':
+                path = prompt(screen, 'Local .lrc or .lyricsfile.yaml path (~ supported)')
+                if not path:
+                    continue
+                record = experience.local_record(path)
+            else:
+                found = wait_source(screen, pool.submit(fetch_record,
+                                    {'track_name': track.title, 'artist_name': track.artist}, 'search'))
+                if found is None:
+                    continue
+                if not isinstance(found, list):
+                    raise ValueError('Search unavailable. Your current lyrics were kept.')
+                if not found:
+                    message = 'No matching versions found. Try a local file.'
+                    continue
+                candidates = []
+                for record in found:
+                    parsed = lyrics.from_record(record)
+                    timing = 'words' if parsed.has_words else 'lines' if parsed.lines else 'untimed'
+                    duration = record.get('duration')
+                    length = clock(duration) if type(duration) in (int, float) and math.isfinite(duration) else '?'
+                    candidates.append(f"{len(candidates) + 1}. {timing} · {length} · {record.get('albumName') or record.get('trackName') or 'Unknown'}")
+                choice = choose(screen, 'Choose the recording matching your song', ['Cancel'] + candidates, 'Cancel')
+                if choice == 'Cancel':
+                    continue
+                record = dict(found[candidates.index(choice)])
+                record['_tlyrics_source'] = f"LRCLIB selection #{record.get('id', '?')}"
+            parsed = experience.select(track, record)
+            return record, parsed
+        except (OSError, ValueError) as exc:
+            diagnostics.record('Lyrics source action failed', exc)
+            message = 'Could not use that source. Current lyrics kept; see Diagnostics.'
+
+
 def view_logs(screen):
     offset = 0
     while True:
@@ -634,6 +783,9 @@ def ui(screen, players, args, config):
     polling = None
     next_poll = 0
     scroll = 0
+    calibration = None
+    calibration_message = ''
+    notice, notice_until = '', 0.0
     error = ''
     bridge_error = ''
     available = []
@@ -707,6 +859,7 @@ def ui(screen, players, args, config):
             new_key = current.key if current and current.title else None
             if new_key != key:
                 key = new_key
+                calibration = None
                 data, doc, scroll = {}, lyrics.Document(), 0
                 if future:
                     future.cancel()
@@ -729,6 +882,9 @@ def ui(screen, players, args, config):
                 else:
                     data = result
                     doc = parsed
+                    if calibration:
+                        calibration = None
+                        notice, notice_until = 'Lyrics changed; calibration cancelled.', time.monotonic() + 4
                 future = None
                 if doc.warning:
                     diagnostics.record('Lyrics parsing warning')
@@ -737,12 +893,12 @@ def ui(screen, players, args, config):
             rendering.chrome(screen, config)
             h, w = screen.getmaxyx()
             if not small_terminal(screen):
-                lyric_top, lyric_bottom, panel = visualizer.region(h, config)
+                lyric_top, lyric_bottom, panel = visualizer.region(h, dict(config, visualizer=False) if calibration else config)
                 if config['show_header']:
                     put(screen, 0, f'tlyrics {updates.VERSION}', accent)
-                if updater.message and config['show_diagnostics']:
+                if updater.message and config['show_diagnostics'] and not calibration:
                     put(screen, 1, updater.message, curses.A_DIM)
-                if bridge_error and config['show_diagnostics']:
+                if bridge_error and config['show_diagnostics'] and not calibration:
                     put(screen, 1, bridge_error)
                 if current and current.title:
                     put(screen, 2, current.title, {'bold': curses.A_BOLD, 'accent': accent, 'plain': 0}[config['title_style']], True)
@@ -751,7 +907,7 @@ def ui(screen, players, args, config):
                     song_offset = config['song_offsets'].get(settings.song_key(current), 0.0)
                     offset = config['offset'] + song_offset
                     stamp = clock(position) if position is not None else '--:--'
-                    if config['show_status']:
+                    if config['show_status'] and not calibration:
                         put(screen, 5, (f'{current.player} · {current.status} · {stamp} / {clock(current.duration)} · offset {offset:+.2f}s' if config['show_diagnostics'] else f'{stamp} / {clock(current.duration)}'), centered=True)
                     if config["progress"] and position is not None and current.duration:
                         length = max(1, w - 6)
@@ -764,9 +920,18 @@ def ui(screen, players, args, config):
                             mode += ' | coarse player timing'
                         elif playback.cadence >= 0.5:
                             mode += ' | interpolating player clock'
-                        if config['show_diagnostics']:
+                        if config['show_diagnostics'] and not calibration:
                             put(screen, 7, mode + (' | ' + doc.warning if doc.warning else ''), curses.A_DIM, True)
-                        rendering.draw(screen, doc, lyric_time, config, top=lyric_top, bottom=lyric_bottom)
+                        if calibration:
+                            target = calibration.lines[calibration.index]
+                            put(screen, 5, f'Calibration · {len(calibration.samples)} distinct taps', centered=True)
+                            put(screen, 7, 'Tap Space as this line begins:', curses.A_BOLD, True)
+                            if calibration_message:
+                                put(screen, 1, calibration_message, curses.A_DIM)
+                            rendering.draw(screen, lyrics.Document([lyrics.Line(0, target.text)]), 0,
+                                           dict(config, layout='focus', word_sync=False), top=lyric_top, bottom=lyric_bottom)
+                        else:
+                            rendering.draw(screen, doc, lyric_time, config, top=lyric_top, bottom=lyric_bottom)
                     elif future:
                         put(screen, (lyric_top + lyric_bottom) // 2, 'Finding lyrics…', centered=True)
                     else:
@@ -782,8 +947,11 @@ def ui(screen, players, args, config):
                 else:
                     put(screen, (lyric_top + lyric_bottom) // 2, (error if config['show_diagnostics'] else '') or 'Waiting for a supported music player...', centered=True)
                 visualizer.draw(screen, visuals, config, panel)
-                if config['show_hints']:
-                    put(screen, h - 2, 'q quit  s settings  v visualizer  u updates  [ / ] timing  0 reset  r retry', curses.A_DIM, True)
+                if notice and time.monotonic() < notice_until:
+                    put(screen, 1, notice, curses.A_DIM)
+                if config['show_hints'] or calibration:
+                    put(screen, h - 2, ('Space tap · ←→ line · Enter review · Backspace reset · Esc cancel' if calibration else
+                                       'q quit  s settings  c calibrate  l lyrics  v visualizer  [/] timing  r retry'), curses.A_DIM, True)
             screen.refresh()
             # Drawing time is part of the frame budget, not an extra delay.
             remaining = 1 / config['fps'] - (time.monotonic() - frame_started)
@@ -792,8 +960,69 @@ def ui(screen, players, args, config):
             if pressed == curses.KEY_RESIZE:
                 screen.clearok(True)
                 continue
+            if calibration:
+                if (h < 14 or w < 24) and pressed not in (27, 3, ord('q'), ord('c')):
+                    continue
+                if pressed in (27, 3, ord('c')):
+                    calibration = None
+                elif pressed in (curses.KEY_LEFT, curses.KEY_RIGHT):
+                    calibration.move(1 if pressed == curses.KEY_RIGHT else -1)
+                elif pressed in (curses.KEY_BACKSPACE, 127, 8):
+                    calibration.samples.clear()
+                    calibration_message = ''
+                elif pressed in (ord(' '), 10, 13):
+                    try:
+                        if pressed == ord(' '):
+                            if not current or current.status != 'Playing':
+                                raise ValueError('Resume the song before tapping.')
+                            calibration.tap(playback.seconds())
+                            calibration_message = ''
+                        else:
+                            adjustment = calibration.adjustment(config['offset'])
+                            screen.timeout(-1)
+                            decision = choose(screen, f'Save song offset {adjustment:+.3f}s?', ['Keep tapping', 'Save'], 'Keep tapping')
+                            screen.timeout(max(1, round(1000 / config['fps'])))
+                            if decision == 'Save':
+                                draft = settings.clone(config)
+                                draft['song_offsets'][settings.song_key(current)] = adjustment
+                                settings.save(draft)
+                                settings.adopt(config, draft)
+                                calibration = None
+                                notice, notice_until = 'Song calibration saved.', time.monotonic() + 4
+                    except ValueError as exc:
+                        calibration_message = str(exc)
+                    except OSError as exc:
+                        diagnostics.record('Calibration save failed', exc)
+                        calibration_message = 'Could not save. See Diagnostics.'
+                if pressed != ord('q'):
+                    continue
             if pressed in (ord('q'), 27, 3):
                 break
+            if pressed == ord('c'):
+                position = playback.seconds()
+                if current and position is not None and doc.lines:
+                    try:
+                        calibration = experience.Calibration(doc, position,
+                            config['offset'] + config['song_offsets'].get(settings.song_key(current), 0))
+                        calibration_message = ''
+                        notice = ''
+                    except ValueError as exc:
+                        notice, notice_until = str(exc), time.monotonic() + 4
+                else:
+                    notice, notice_until = 'Calibration needs a song with timed lyrics.', time.monotonic() + 4
+            if pressed == ord('l') and current:
+                try:
+                    result = source_menu(screen, current, data, doc, lyrics_pool, config['cache'])
+                    if result:
+                        if future:
+                            future.cancel()
+                        future = None
+                        local = None
+                        data, doc = result
+                        scroll = 0
+                    next_poll = 0
+                finally:
+                    screen.timeout(max(1, round(1000 / config['fps'])))
             if pressed == ord('s'):
                 if menu(screen, config, available) == 'check_updates':
                     updater.check(config, manual=True)
